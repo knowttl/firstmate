@@ -38,9 +38,6 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 GRACE=${FM_GUARD_GRACE:-300}
 WATCH="$SCRIPT_DIR/fm-watch.sh"
 
-# shellcheck source=bin/fm-supervision-lib.sh
-. "$SCRIPT_DIR/fm-supervision-lib.sh"
-
 # Read the whole Stop hook payload once; never block on unreadable/absent stdin.
 PAYLOAD=$(cat 2>/dev/null || true)
 [ -n "$PAYLOAD" ] || exit 0
@@ -71,8 +68,14 @@ GIT_COMMON_DIR=$(git -C "$FM_ROOT" rev-parse --git-common-dir 2>/dev/null) || ex
 [ -d "$STATE" ] || exit 0
 
 # --- the actual predicate ----------------------------------------------------
+# Sourced only after the primary-scoping checks above have passed, so a
+# crewmate/scout worktree or secondmate home (where this hook is inert) never
+# incurs the wake-lib load. wake-lib comes first so fm-supervision-lib.sh finds the
+# pid helpers already defined and does not re-source them.
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-supervision-lib.sh
+. "$SCRIPT_DIR/fm-supervision-lib.sh"
 
 fm_supervision_status "$STATE" "$GRACE"
 [ "$FM_SUP_IN_FLIGHT" -gt 0 ] || exit 0

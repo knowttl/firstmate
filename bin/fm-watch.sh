@@ -273,6 +273,16 @@ age_of() {  # seconds since file mtime; "due immediately" if missing
   echo $(( $(date +%s) - m ))
 }
 
+# Liveness beacon for fm-guard.sh and fm_supervision_status: a fresh mtime means
+# this watcher is alive and cycling. It is touched at the top of every poll AND
+# again around each bounded-but-slow step in the loop (a *.check.sh sweep, the
+# signal-coalescing linger, the pane-capture sweep). Those steps are places the
+# watcher is legitimately alive-but-busy; without a beat around them a single slow
+# iteration could age the beacon past the grace window and make a healthy watcher
+# read as down (a false alarm that then triggers a needless restart). A genuinely
+# wedged watcher still never reaches these beats, so this cannot mask a real stall.
+beat() { touch "$STATE/.last-watcher-beat"; }
+
 [ -e "$STATE/.last-heartbeat" ] || touch "$STATE/.last-heartbeat"
 
 # Layer 2 + 3 signal scan: status files and turn-end markers. Each file is
@@ -370,9 +380,8 @@ while :; do
     exit 0
   fi
 
-  # Liveness beacon for fm-guard.sh: a fresh mtime here means a watcher is
-  # alive. Supervision scripts warn when this goes stale with tasks in flight.
-  touch "$STATE/.last-watcher-beat"
+  # Liveness beacon (see beat() above): fresh mtime here means a watcher is alive.
+  beat
 
   # Slow per-task checks (firstmate writes these, e.g. a merged-PR poll).
   # Time-based via .last-check mtime so the cadence survives watcher restarts.
@@ -393,6 +402,9 @@ while :; do
       fi
     done
     touch "$STATE/.last-check"
+    # A full check sweep can block for up to CHECK_TIMEOUT per script; re-beat so a
+    # slow-but-alive sweep does not age the beacon toward a false down alarm.
+    beat
   fi
 
   # On the first changed signal, linger one grace period and re-scan before
@@ -402,7 +414,9 @@ while :; do
   # signature for an already-pending file (last write wins below).
   pending=$(scan_signals)
   if [ -n "$pending" ]; then
+    beat  # the grace linger below is a bounded sleep; stay fresh across it
     sleep "$SIGNAL_GRACE"
+    beat
     pending=$(printf '%s\n%s' "$pending" "$(scan_signals)")
     files=""
     while IFS=$(printf '\t') read -r sf sig f; do
@@ -595,5 +609,9 @@ EOF
     fi
   fi
 
+  # The pane-capture sweep above issues one backend capture per recorded window,
+  # which can be slow on a large fleet or a heavy backend; re-beat before the poll
+  # sleep so that work cannot age the beacon into a false down alarm either.
+  beat
   sleep "$POLL"
 done

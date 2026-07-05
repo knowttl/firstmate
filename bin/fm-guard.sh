@@ -83,7 +83,7 @@ if [ "$watcher_fresh" = false ]; then
   {
     printf '●%s\n' "$rule"
     printf '●  WATCHER DOWN - SUPERVISION IS OFF\n'
-    printf '●  %s task(s) in flight, but no watcher has a fresh beacon (last beat: %s, grace %ss).\n' "$in_flight" "$beacon_desc" "$GRACE"
+    printf '●  %s task(s) in flight, but no live watcher holds this home lock (last beat: %s, grace %ss).\n' "$in_flight" "$beacon_desc" "$GRACE"
     if [ "$READ_ONLY" -eq 1 ]; then
       printf '●  This read-only session should report the lapse, not repair it.\n'
     else

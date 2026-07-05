@@ -54,16 +54,75 @@ test_predicate_unhealthy_stale_beacon() {
   pass "fm_supervision_unhealthy: true with in-flight task and a beacon far outside the grace window"
 }
 
+# A fresh beacon is only healthy when a genuinely live, identity-matched watcher
+# holds the lock. Record such a lock for the live pid $1 in state dir $2. The
+# identity is read via a subshell sourcing fm-wake-lib.sh so this helper does not
+# depend on the module-under-test having sourced those primitives.
+record_predicate_live_lock() {
+  local pid=$1 state=$2 identity
+  identity=$(bash -c '. "$1"; fm_pid_identity "$2"' _ "$ROOT/bin/fm-wake-lib.sh" "$pid") || return 1
+  [ -n "$identity" ] || return 1
+  mkdir -p "$state/.watch.lock"
+  printf '%s\n' "$pid" > "$state/.watch.lock/pid"
+  printf '%s\n' "$identity" > "$state/.watch.lock/pid-identity"
+}
+
 test_predicate_healthy_fresh_beacon() {
-  local state="$TMP_ROOT/pred-fresh/state"
+  local state="$TMP_ROOT/pred-fresh/state" pid
+  mkdir -p "$state"
+  : > "$state/task1.meta"
+  sleep 60 &
+  pid=$!
+  record_predicate_live_lock "$pid" "$state" || {
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    fail "could not record a live watcher lock"
+  }
+  touch "$state/.last-watcher-beat"
+  if fm_supervision_unhealthy "$state" 300; then
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    fail "predicate fired despite a fresh beacon backed by a live watcher lock"
+  fi
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  [ "$FM_SUP_WATCHER_FRESH" = true ] || fail "a fresh beacon with a live identity-matched lock must read as fresh"
+  pass "fm_supervision_unhealthy: false with in-flight task, a fresh beacon, and a live watcher lock"
+}
+
+# The silent-gap regression: a watcher that died leaves a recently-touched beacon
+# behind. Judging health by beacon mtime alone reads that as fresh and the pull
+# guard stays silent through a real supervision gap. The predicate must instead see
+# the dead lock and report unhealthy despite the fresh beacon.
+test_predicate_unhealthy_dead_lock_fresh_beacon() {
+  local state="$TMP_ROOT/pred-dead-lock-fresh/state" dead
+  mkdir -p "$state"
+  : > "$state/task1.meta"
+  dead=$(nonexistent_pid)
+  mkdir -p "$state/.watch.lock"
+  printf '%s\n' "$dead" > "$state/.watch.lock/pid"
+  printf '%s\n' "dead watcher identity" > "$state/.watch.lock/pid-identity"
+  touch "$state/.last-watcher-beat"
+  fm_supervision_unhealthy "$state" 300 || fail "predicate did not fire: dead watcher lock with a fresh beacon"
+  [ "$FM_SUP_WATCHER_FRESH" = false ] || fail "a fresh beacon left by a dead watcher must not read as fresh"
+  pass "fm_supervision_unhealthy: true when a dead watcher lock has a fresh beacon (silent-gap regression)"
+}
+
+# A fresh beacon with NO watcher lock is the normal gap between a wake fire (the
+# watcher cleanly released its lock on exit) and the re-arm. The grace window must
+# tolerate it so the pull guard does not false-alarm on every wake - unlike a
+# dead-pid lock, which signals an unclean death. The turn-end hook is stricter and
+# blocks on this via fm_watcher_healthy (covered by the HOOK cases below).
+test_predicate_tolerates_fresh_beacon_no_lock() {
+  local state="$TMP_ROOT/pred-fresh-no-lock/state"
   mkdir -p "$state"
   : > "$state/task1.meta"
   touch "$state/.last-watcher-beat"
   if fm_supervision_unhealthy "$state" 300; then
-    fail "predicate fired despite a fresh beacon"
+    fail "predicate false-alarmed on the normal fire-to-re-arm gap (fresh beacon, no lock)"
   fi
-  [ "$FM_SUP_WATCHER_FRESH" = true ] || fail "a beacon touched just now must read as fresh"
-  pass "fm_supervision_unhealthy: false with in-flight task and a fresh beacon"
+  [ "$FM_SUP_WATCHER_FRESH" = true ] || fail "a fresh beacon with no lock must stay healthy within grace"
+  pass "fm_supervision_unhealthy: false with a fresh beacon and no lock (tolerated fire-to-re-arm gap)"
 }
 
 test_predicate_queue_pending_flag() {
@@ -366,6 +425,8 @@ test_predicate_healthy_no_inflight
 test_predicate_unhealthy_no_beacon
 test_predicate_unhealthy_stale_beacon
 test_predicate_healthy_fresh_beacon
+test_predicate_unhealthy_dead_lock_fresh_beacon
+test_predicate_tolerates_fresh_beacon_no_lock
 test_predicate_queue_pending_flag
 test_hook_silent_when_no_work_in_flight
 test_hook_blocks_when_fresh_beacon_has_no_live_lock

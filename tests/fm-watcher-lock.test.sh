@@ -100,8 +100,8 @@ test_guard_warnings() {
   #       title, in-flight count, beacon age, fix command), the queued-wakes
   #       warning follows it, and the guidance is re-arm-after-drain (never the
   #       old conflicting "restart NOW first").
-  #   (2) a fresh watcher and an empty queue: total silence.
-  local dir state err first banner_line queue_line
+  #   (2) a live watcher with a fresh beacon and an empty queue: total silence.
+  local dir state err first banner_line queue_line live identity
   dir=$(make_case guard)
   state="$dir/state"
   err="$dir/guard.err"
@@ -129,17 +129,122 @@ test_guard_warnings() {
   queue_line=$(grep -n 'queued wakes pending - drain them' "$err" | head -1 | cut -d: -f1)
   [ "$banner_line" -lt "$queue_line" ] || fail "queued-wakes warning printed before the no-watcher banner"
 
-  # (2) fresh watcher, empty queue -> silence.
+  # (2) live watcher (identity-matched lock) + fresh beacon, empty queue -> silence.
+  # A fresh beacon alone is no longer proof of health, so this case records a
+  # genuinely live watcher lock the way a real watcher would.
   dir=$(make_case guard-fresh)
   state="$dir/state"
   err="$dir/guard.err"
   printf 'project=x\n' > "$state/task.meta"
+  sleep 300 &
+  live=$!
+  identity=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$live") || fail "could not identify live holder"
+  mkdir "$state/.watch.lock"
+  printf '%s\n' "$live" > "$state/.watch.lock/pid"
+  printf '%s\n' "$identity" > "$state/.watch.lock/pid-identity"
   touch "$state/.last-watcher-beat"
-  # Non-git FM_ROOT keeps the worktree-tangle check inert so "fresh watcher ->
+  # Non-git FM_ROOT keeps the worktree-tangle check inert so "live watcher ->
   # total silence" stays a pure assertion about watcher state.
   FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=300 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null || fail "guard failed"
-  [ ! -s "$err" ] || fail "guard warned with a fresh watcher and no queued wakes: $(cat "$err")"
-  pass "guard banner leads when down with pending wakes (re-arm-after-drain) and stays silent when fresh"
+  kill "$live" 2>/dev/null || true
+  wait "$live" 2>/dev/null || true
+  [ ! -s "$err" ] || fail "guard warned with a live watcher and no queued wakes: $(cat "$err")"
+  pass "guard banner leads when down with pending wakes (re-arm-after-drain) and stays silent when a live watcher is fresh"
+}
+
+# Portable mtime for a single file, platform-detected (never the `stat -c ... ||
+# stat -f ...` form, which dumps filesystem info on Linux). Used to observe the
+# liveness beacon advancing.
+beat_mtime() {
+  if [ "$(uname)" = Darwin ]; then stat -f %m "$1" 2>/dev/null; else stat -c %Y "$1" 2>/dev/null; fi
+}
+
+# The silent-gap regression at the guard level: a watcher that died leaves a
+# recently-touched beacon behind. Judged by beacon mtime alone (the old behavior)
+# the pull-based guard stays completely silent, so a real supervision gap goes
+# unsurfaced. The guard must now see the dead lock and raise the WATCHER DOWN alarm
+# despite the fresh beacon.
+test_guard_warns_on_dead_watcher_with_fresh_beacon() {
+  local dir state err dead
+  dir=$(make_case guard-dead-fresh)
+  state="$dir/state"
+  err="$dir/guard.err"
+  # A non-git FM_ROOT keeps the worktree-tangle check inert so this asserts only
+  # the watcher-liveness path.
+  printf 'project=x\n' > "$state/task.meta"
+  dead=$(dead_pid)
+  mkdir "$state/.watch.lock"
+  printf '%s\n' "$dead" > "$state/.watch.lock/pid"
+  printf '%s\n' "dead watcher identity" > "$state/.watch.lock/pid-identity"
+  touch "$state/.last-watcher-beat"   # FRESH beacon, but the recorded watcher pid is dead
+  FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=300 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null || fail "guard failed"
+  grep -F 'WATCHER DOWN - SUPERVISION IS OFF' "$err" >/dev/null || fail "guard stayed silent for a dead watcher with a fresh beacon (the silent-gap bug)"
+  grep -F 'no live watcher holds this home lock' "$err" >/dev/null || fail "guard banner did not name the missing live watcher"
+  pass "guard warns when a dead watcher lock has a fresh beacon"
+}
+
+# The guard must stay silent when a genuinely live, identity-matched watcher holds
+# the lock with a fresh beacon - the tightened liveness check must not raise false
+# alarms on a healthy watcher.
+test_guard_silent_for_live_watcher_fresh_beacon() {
+  local dir state err live identity
+  dir=$(make_case guard-live-fresh)
+  state="$dir/state"
+  err="$dir/guard.err"
+  printf 'project=x\n' > "$state/task.meta"
+  sleep 300 &
+  live=$!
+  identity=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$live") || fail "could not identify live holder"
+  mkdir "$state/.watch.lock"
+  printf '%s\n' "$live" > "$state/.watch.lock/pid"
+  printf '%s\n' "$identity" > "$state/.watch.lock/pid-identity"
+  touch "$state/.last-watcher-beat"
+  FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=300 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null || fail "guard failed"
+  kill "$live" 2>/dev/null || true
+  wait "$live" 2>/dev/null || true
+  [ ! -s "$err" ] || fail "guard warned despite a live identity-matched watcher and fresh beacon: $(cat "$err")"
+  pass "guard stays silent for a live identity-matched watcher with a fresh beacon"
+}
+
+# Beacon freshness across bounded slow work: a live watcher running a slow
+# *.check.sh must keep beating so it is never misjudged as down. With POLL far
+# longer than the check, the beacon can only advance within the interval via the
+# beats placed around the slow check - so the advance proves those beats fire.
+test_watcher_beacon_stays_fresh_across_slow_check() {
+  local dir state fakebin check beat pid t0 now i advanced
+  dir=$(make_case beacon-slow-check)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  check="$state/merge.check.sh"
+  cat > "$check" <<'SH'
+#!/usr/bin/env bash
+sleep 3   # a slow poll that yields no wake; the watcher stays inside this cycle
+exit 0
+SH
+  chmod +x "$check"
+  beat="$state/.last-watcher-beat"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=30 FM_CHECK_INTERVAL=0 FM_CHECK_TIMEOUT=30 FM_SIGNAL_GRACE=1 FM_HEARTBEAT=999999 "$WATCH" >/dev/null 2>&1 &
+  pid=$!
+  # Baseline: the first (top-of-loop) beat.
+  i=0; t0=
+  while [ "$i" -lt 50 ]; do
+    if [ -e "$beat" ]; then t0=$(beat_mtime "$beat"); [ -n "$t0" ] && break; fi
+    sleep 0.1; i=$((i + 1))
+  done
+  [ -n "$t0" ] || { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fail "watcher never wrote a beacon"; }
+  # Within ~9s (well under POLL=30), the beat around the slow check must advance the
+  # beacon past the baseline. Without those beats it would not move until the next
+  # loop top, 30s away, aging toward a false down alarm.
+  advanced=0; i=0
+  while [ "$i" -lt 90 ]; do
+    now=$(beat_mtime "$beat")
+    if [ -n "$now" ] && [ "$now" -gt "$t0" ]; then advanced=1; break; fi
+    sleep 0.1; i=$((i + 1))
+  done
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  [ "$advanced" -eq 1 ] || fail "beacon did not refresh across a slow check within a poll interval (would age toward a false down alarm)"
+  pass "watcher beacon stays fresh across a slow check"
 }
 
 test_lock_single_winner_under_concurrency() {
@@ -623,6 +728,9 @@ test_singleton_start
 test_stale_watch_lock_reclaimed
 test_live_stale_watch_lock_is_actionable
 test_guard_warnings
+test_guard_warns_on_dead_watcher_with_fresh_beacon
+test_guard_silent_for_live_watcher_fresh_beacon
+test_watcher_beacon_stays_fresh_across_slow_check
 test_lock_single_winner_under_concurrency
 test_lock_steals_dead_pid_lock
 test_lock_stale_steal_single_winner_under_concurrency

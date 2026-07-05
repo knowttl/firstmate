@@ -50,8 +50,9 @@ result: "BANANA"
 
 ## Detection predicate
 
-`bin/fm-supervision-lib.sh` factors the exact "in-flight work exists, but no watcher has a fresh beacon" computation out of `bin/fm-guard.sh` into a shared function, `fm_supervision_unhealthy <state-dir> [grace-seconds]`.
-That remains the right predicate for the pull-based guard, where a brief gap after a wake fires should stay silent inside the grace window.
+`bin/fm-supervision-lib.sh` factors the "in-flight work exists, but no live watcher is supervising it" computation out of `bin/fm-guard.sh` into a shared function, `fm_supervision_unhealthy <state-dir> [grace-seconds]`.
+A fresh beacon is necessary but not sufficient: the predicate also inspects the watcher singleton lock, so a beacon left fresh by a watcher that died uncleanly (its lock still names a dead or pid-reused process) reads as unhealthy immediately instead of waiting out the grace window - the pull-guard gap that let supervision lapse silently.
+It stays the right predicate for the pull-based guard, where the normal fire-to-re-arm gap is a cleanly-released (absent) lock and stays silent inside the grace window; only a lock still held by a dead process is a genuine lapse.
 It also exposes `fm_supervision_status` for callers that need the individual fields (in-flight count, beacon freshness/age, queued-wake pending) rather than just the boolean.
 
 `bin/fm-turnend-guard.sh` deliberately uses a sharper end-of-turn predicate.
