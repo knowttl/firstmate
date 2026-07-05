@@ -56,7 +56,8 @@ The review tool is what the first mate reaches for to turn a complex decision or
 It defaults to `lavish-axi` and is overridable per home by putting a single tool name on the first non-empty line of local, gitignored `config/review-tool`.
 An absent or blank file keeps the default `lavish-axi`, so existing behavior is unchanged.
 Bootstrap's toolchain check resolves this name and, when the tool is missing, lists it with its `npm install -g <name> && <name> setup hooks` command exactly as it does for the other required tools; an override such as `atelier-axi` installs through that same path with no special-casing.
-Like `config/backend`, `config/review-tool` is local and not inherited by secondmate homes.
+Unlike `config/backend`, `config/review-tool` is inherited by secondmate homes (like `config/crew-harness` and `config/backlog-backend`), so setting it once at the primary applies fleetwide and re-converges every live home on each bootstrap sweep or `bin/fm-config-push.sh`; switch the whole fleet back by changing (or removing) that single primary file.
+Note this file only drives the bootstrap toolchain check - which tool firstmate is told to install and to prefer; the tool an agent actually reaches for is ultimately governed by which review-tool CLI is installed and has registered its harness session hooks.
 
 ## Away-mode supervisor backend (FM_SUPERVISOR_BACKEND / FM_SUPERVISOR_TARGET)
 
