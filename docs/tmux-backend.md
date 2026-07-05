@@ -15,7 +15,7 @@ Pick tmux unless you have a specific reason to try an experimental backend (herd
 - A verified crew harness: `claude`, `codex`, `opencode`, `pi`, or `grok`.
 - `git` with GitHub auth (`gh auth login`).
 - `node`, required by firstmate's universal toolchain.
-- `treehouse` for pooling clean worktrees; `no-mistakes` for the validation pipeline; `gh-axi`, `chrome-devtools-axi`, and `lavish-axi` for GitHub, browser, and rich-review operations.
+- `treehouse` for pooling clean worktrees; `no-mistakes` for the validation pipeline; `gh-axi`, `chrome-devtools-axi`, and the review tool (default `lavish-axi`, overridable via `config/review-tool`) for GitHub, browser, and rich-review operations.
 
 The first mate detects missing tools at session start and offers to install them after you approve.
 

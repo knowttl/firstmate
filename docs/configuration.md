@@ -50,6 +50,14 @@ The caller-facing label remains `fm-<id>`, but the actual cmux workspace title i
 Test cleanup must use the guarded path described in [`docs/cmux-backend.md`](cmux-backend.md)'s "Test safety" section, never enumerate-and-close every workspace.
 The `config/backend` file is not inherited by secondmate homes.
 
+## Review tool (config/review-tool)
+
+The review tool is what the first mate reaches for to turn a complex decision or a structured report into a rich, annotatable surface instead of plain chat.
+It defaults to `lavish-axi` and is overridable per home by putting a single tool name on the first non-empty line of local, gitignored `config/review-tool`.
+An absent or blank file keeps the default `lavish-axi`, so existing behavior is unchanged.
+Bootstrap's toolchain check resolves this name and, when the tool is missing, lists it with its `npm install -g <name> && <name> setup hooks` command exactly as it does for the other required tools; an override such as `atelier-axi` installs through that same path with no special-casing.
+Like `config/backend`, `config/review-tool` is local and not inherited by secondmate homes.
+
 ## Away-mode supervisor backend (FM_SUPERVISOR_BACKEND / FM_SUPERVISOR_TARGET)
 
 The `/afk` sub-supervisor injects escalation digests into firstmate's own pane independently of where new task endpoints are spawned.
@@ -139,7 +147,7 @@ Secondmate homes inherit this file from the primary, so a secondmate's own crewm
 
 ## Toolchain
 
-On session start the first mate detects what its required toolchain is missing or too old (tmux, node, gh, treehouse with durable lease support, no-mistakes v1.31.2 or newer, gh-axi, chrome-devtools-axi, lavish-axi), lists it with the exact install commands, and installs only after you say go.
+On session start the first mate detects what its required toolchain is missing or too old (tmux, node, gh, treehouse with durable lease support, no-mistakes v1.31.2 or newer, gh-axi, chrome-devtools-axi, and the review tool - default `lavish-axi`, overridable via `config/review-tool`), lists it with the exact install commands, and installs only after you say go.
 When bootstrap resolves `backend=orca` from `FM_BACKEND` or `config/backend`, it requires `orca`, keeps the universal `node` requirement, and skips `tmux` and `treehouse`.
 When `config/crew-dispatch.json` exists, bootstrap also requires `jq` for dispatch profile validation.
 When X mode is opted in, bootstrap also requires `curl` and `jq` before arming the relay poll shim.
