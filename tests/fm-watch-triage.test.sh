@@ -317,6 +317,30 @@ test_consecutive_parked_gates_are_surfaced() {
   pass "a new gate in the same run is not suppressed by the previous parked marker"
 }
 
+test_multiple_parked_runs_emit_one_afk_wake() {
+  local dir state fakebin out drain_out pid
+  dir=$(make_case multiple-parked); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  fm_write_meta "$state/alpha.meta" "window=test:fm-alpha" "kind=ship"
+  fm_write_meta "$state/bravo.meta" "window=test:fm-bravo" "kind=ship"
+  touch "$state/.afk"
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · run-id: 01RUN · gate: review · parked 1m at review'
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not wake for multiple parked runs in away mode"
+  [ "$(wc -l < "$out" | tr -d '[:space:]')" = 1 ] || fail "multiple parked runs did not emit one combined wake"
+  grep -F "parked: alpha (state: parked" "$out" >/dev/null || fail "combined wake omitted alpha"
+  grep -F "; bravo (state: parked" "$out" >/dev/null || fail "combined wake omitted bravo or changed deterministic order"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after multiple parked runs failed"
+  [ "$(grep -c "$(printf '\tparked\t')" "$drain_out")" = 2 ] || fail "multiple parked runs did not retain individual durable wakes"
+  [ -e "$state/.parked-alpha" ] && [ -e "$state/.parked-bravo" ] \
+    || fail "multiple parked runs did not record each repeat-wake suppressor"
+  unset FM_FAKE_CREW_STATE
+  pass "multiple parked runs emit one deterministic away-mode wake and retain durable records"
+}
+
 test_parked_scan_has_one_fleet_deadline() {
   local dir state fakebin out pid started elapsed id
   dir=$(make_case bounded-parked-scan); state="$dir/state"; fakebin="$dir/fakebin"
@@ -723,6 +747,7 @@ test_turn_ended_not_working_surfaced
 test_working_note_not_working_surfaced
 test_parked_run_surfaced_without_pane_staleness
 test_consecutive_parked_gates_are_surfaced
+test_multiple_parked_runs_emit_one_afk_wake
 test_parked_scan_has_one_fleet_deadline
 test_actionable_signal_surfaced
 test_terminal_stale_surfaced

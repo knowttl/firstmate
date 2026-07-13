@@ -456,15 +456,21 @@ while :; do
     parked=$(newly_parked_runs)
     touch "$STATE/.last-parked-scan"
     if [ -n "$parked" ]; then
+      parked_reason=""
       while IFS=$(printf '\t') read -r id identity line; do
         [ -n "$id" ] || continue
         reason="parked: $id ($line)"
         fm_wake_append parked "$id" "$reason" || exit 1
         printf '%s\n' "$identity" > "$STATE/.parked-$id"
+        if [ -n "$parked_reason" ]; then
+          parked_reason="$parked_reason; ${reason#parked: }"
+        else
+          parked_reason=$reason
+        fi
       done <<EOF
 $parked
 EOF
-      wake "$reason"
+      wake "$parked_reason"
     fi
   fi
 

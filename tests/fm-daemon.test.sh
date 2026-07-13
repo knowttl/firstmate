@@ -74,12 +74,14 @@ test_classify_check_and_unknown_escalate() {
 }
 
 test_parked_wake_escalates() {
-  local out
-  is_wake_reason "parked: crew-x (state: parked · source: run-step)" \
+  local out reason
+  reason="parked: crew-x (state: parked · source: run-step); crew-y (state: parked · source: run-step)"
+  is_wake_reason "$reason" \
     || fail "parked run was not recognized as a watcher wake"
-  out=$(classify_parked "parked: crew-x (state: parked · source: run-step)")
+  out=$(classify_parked "$reason")
   case "$out" in escalate\|*) ;; *) fail "parked run did not escalate: $out" ;; esac
-  pass "parked watcher wakes escalate to the away-mode supervisor"
+  case "$out" in *crew-x*crew-y*) ;; *) fail "combined parked wake omitted a crew: $out" ;; esac
+  pass "combined parked watcher wakes escalate every crew to the away-mode supervisor"
 }
 
 test_stale_transient_self_records_marker() {
