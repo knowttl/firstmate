@@ -5,6 +5,7 @@
 #          Silent = all good.
 #          Lines: "MISSING: <tool> (install: <command>)", "NEEDS_GH_AUTH",
 #                 "CREW_HARNESS_OVERRIDE: <name>",
+#                 "REVIEW_TOOL_OVERRIDE: <name>",
 #                 "CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>",
 #                 "CREW_DISPATCH: active config/crew-dispatch.json" plus indented rules,
 #                 "FLEET_SYNC: <repo>: skipped|recovered|STUCK: <detail>",
@@ -175,19 +176,16 @@ secondmate_sync() {
   return 0
 }
 
-# review_tool_name: resolve the rich-review tool for the toolchain check.
-# Reads config/review-tool's first non-empty line (a single tool name,
-# mirroring config/crew-harness and config/backend); defaults to lavish-axi
-# when the file is absent or blank, so default behavior is unchanged. Any
-# resolved name installs via the same `npm install -g <name> && <name> setup
-# hooks` path (see install_cmd), so an override like atelier-axi needs no
-# further special-casing.
 review_tool_name() {
   local line v
   if [ -f "$CONFIG/review-tool" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
-      v=$(printf '%s' "$line" | tr -d '[:space:]')
+      v=${line#"${line%%[![:space:]]*}"}
+      v=${v%"${v##*[![:space:]]}"}
       if [ -n "$v" ]; then
+        case "$v" in
+          *[!A-Za-z0-9._-]*|[.-]*) return 1 ;;
+        esac
         printf '%s' "$v"
         return 0
       fi
@@ -195,7 +193,8 @@ review_tool_name() {
   fi
   printf 'lavish-axi'
 }
-REVIEW_TOOL=$(review_tool_name)
+REVIEW_TOOL_VALID=1
+REVIEW_TOOL=$(review_tool_name) || { REVIEW_TOOL=lavish-axi; REVIEW_TOOL_VALID=0; }
 
 install_cmd() {
   case "$1" in
@@ -204,6 +203,17 @@ install_cmd() {
     no-mistakes) echo "curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh" ;;
     gh-axi|chrome-devtools-axi|"$REVIEW_TOOL") echo "npm install -g $1 && $1 setup hooks" ;;
     tasks-axi) echo "npm install -g tasks-axi" ;;
+    *) return 1 ;;
+  esac
+}
+
+install_tool() {
+  case "$1" in
+    tmux|node|gh|curl|jq|orca) brew install "$1" ;;
+    treehouse) curl -fsSL https://kunchenguid.github.io/treehouse/install.sh | sh ;;
+    no-mistakes) curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh ;;
+    gh-axi|chrome-devtools-axi|"$REVIEW_TOOL") npm install -g "$1" && "$1" setup hooks ;;
+    tasks-axi) npm install -g tasks-axi ;;
     *) return 1 ;;
   esac
 }
@@ -414,7 +424,7 @@ if [ "${1:-}" = "install" ]; then
     cmd=$(install_cmd "$t") || { echo "error: unknown tool $t" >&2; exit 1; }
     cmd=${cmd%%  #*}
     echo "installing $t: $cmd"
-    eval "$cmd"
+    install_tool "$t"
   done
   exit 0
 fi
@@ -444,6 +454,13 @@ fi
 crew=
 [ -f "$CONFIG/crew-harness" ] && crew=$(tr -d '[:space:]' < "$CONFIG/crew-harness" || true)
 [ -n "$crew" ] && [ "$crew" != "default" ] && echo "CREW_HARNESS_OVERRIDE: $crew"
+if [ -f "$CONFIG/review-tool" ]; then
+  if [ "$REVIEW_TOOL_VALID" = 1 ]; then
+    [ "$REVIEW_TOOL" != lavish-axi ] && echo "REVIEW_TOOL_OVERRIDE: $REVIEW_TOOL"
+  else
+    echo "REVIEW_TOOL_OVERRIDE: invalid config/review-tool"
+  fi
+fi
 crew_dispatch_validate
 if ! fm_backlog_backend_manual "$CONFIG"; then
   if fm_tasks_axi_compatible; then

@@ -410,7 +410,9 @@ if [ "$HAVE_RUN" = 1 ]; then
       [ -n "$gate" ] || gate=$status
       [ -n "$gate" ] || gate=gate
       RUN_STATE=parked
-      RUN_DETAIL="${awaiting:-parked} at $gate"
+      run_id=$(strip_quotes "$(nm_field id)")
+      [ -n "$run_id" ] || run_id=unknown
+      RUN_DETAIL="run-id: $run_id${SEP}gate: $gate${SEP}${awaiting:-parked} at $gate"
       fcount=$(nm_gate_findings_count)
       [ -n "$fcount" ] && RUN_DETAIL="$RUN_DETAIL: $fcount finding(s)"
       if printf '%s\n' "$RUN_OUT" | grep -q 'ask-user'; then

@@ -284,7 +284,7 @@ test_parked_run_surfaced_without_pane_staleness() {
   dir=$(make_case parked-run); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; drain_out="$dir/drain.out"
   fm_write_meta "$state/task.meta" "window=test:fm-task" "kind=ship"
-  export FM_FAKE_CREW_STATE='state: parked · source: run-step · parked 1h44m at review: 2 finding(s)'
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · run-id: 01RUN · gate: review · parked 1h44m at review: 2 finding(s)'
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
     FM_PARKED_SCAN_INTERVAL=0 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
     "$WATCH" > "$out" &
@@ -297,6 +297,24 @@ test_parked_run_surfaced_without_pane_staleness() {
   [ -e "$state/.parked-task" ] || fail "parked run did not record its repeat-wake suppressor"
   unset FM_FAKE_CREW_STATE
   pass "a branch-matched parked run wakes immediately with duration, independent of pane staleness"
+}
+
+test_consecutive_parked_gates_are_surfaced() {
+  local dir state fakebin out pid
+  dir=$(make_case consecutive-parked); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  fm_write_meta "$state/task.meta" "window=test:fm-task" "kind=ship"
+  printf '%s\n' 'run-id: 01RUN · gate: review' > "$state/.parked-task"
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · run-id: 01RUN · gate: test · parked 1m at test'
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher suppressed a new gate in the same run"
+  grep -F "gate: test" "$out" >/dev/null || fail "watcher did not surface the new gate identity"
+  [ "$(cat "$state/.parked-task")" = 'run-id: 01RUN · gate: test' ] || fail "parked marker did not advance to the new gate identity"
+  unset FM_FAKE_CREW_STATE
+  pass "a new gate in the same run is not suppressed by the previous parked marker"
 }
 
 # --- actionable wakes are surfaced (queue + exit) ---------------------------
@@ -676,6 +694,7 @@ test_turn_ended_provably_working_absorbed
 test_turn_ended_not_working_surfaced
 test_working_note_not_working_surfaced
 test_parked_run_surfaced_without_pane_staleness
+test_consecutive_parked_gates_are_surfaced
 test_actionable_signal_surfaced
 test_terminal_stale_surfaced
 test_stale_terminal_status_overridden_by_active_run

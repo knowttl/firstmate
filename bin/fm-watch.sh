@@ -275,7 +275,7 @@ wedge_timer_check() {  # <window> <since-file> <triage-label>
 # when a later authoritative run-step read proves that the run moved on; an
 # unreadable transient must not turn into alert spam.
 newly_parked_runs() {
-  local meta id kind line marker
+  local meta id kind line marker identity previous run_id gate
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
     kind=$(grep '^kind=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
@@ -286,7 +286,12 @@ newly_parked_runs() {
     marker="$STATE/.parked-$id"
     case "$line" in
       "state: parked "*"source: run-step"*)
-        [ -e "$marker" ] || printf '%s\t%s\n' "$id" "$line"
+        case "$line" in *"run-id: "*" · gate: "*" · "*) ;; *) continue ;; esac
+        run_id=${line#*run-id: }; run_id=${run_id%% ·*}
+        gate=${line#* · gate: }; gate=${gate%% ·*}
+        identity="run-id: $run_id · gate: $gate"
+        previous=$(cat "$marker" 2>/dev/null || true)
+        [ "$previous" = "$identity" ] || printf '%s\t%s\t%s\n' "$id" "$identity" "$line"
         ;;
       "state: "*"source: run-step"*)
         rm -f "$marker"
@@ -433,11 +438,11 @@ while :; do
     parked=$(newly_parked_runs)
     touch "$STATE/.last-parked-scan"
     if [ -n "$parked" ]; then
-      while IFS=$(printf '\t') read -r id line; do
+      while IFS=$(printf '\t') read -r id identity line; do
         [ -n "$id" ] || continue
         reason="parked: $id ($line)"
         fm_wake_append parked "$id" "$reason" || exit 1
-        printf 'parked\n' > "$STATE/.parked-$id"
+        printf '%s\n' "$identity" > "$STATE/.parked-$id"
       done <<EOF
 $parked
 EOF

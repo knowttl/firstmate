@@ -226,8 +226,29 @@ ROWS
   pass "bootstrap validates crew-dispatch.json and reports malformed or unverified configs"
 }
 
+test_review_tool_override_is_validated_and_surfaced() {
+  local case_dir fakebin out
+  case_dir="$TMP_ROOT/review-tool"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' atelier-axi > "$case_dir/home/config/review-tool"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  fm_fake_exit0 "$fakebin" atelier-axi
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  [ "$out" = "REVIEW_TOOL_OVERRIDE: atelier-axi" ] || fail "valid review-tool override was not surfaced: $out"
+
+  printf '%s\n' 'atelier-axi; touch injected' > "$case_dir/home/config/review-tool"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  assert_contains "$out" "REVIEW_TOOL_OVERRIDE: invalid config/review-tool" "unsafe review-tool override was not rejected"
+  [ ! -e "$case_dir/home/injected" ] || fail "unsafe review-tool override executed shell syntax"
+  pass "bootstrap validates and surfaces the review-tool override"
+}
+
 test_bootstrap_reporting
 test_no_mistakes_min_version
 test_orca_backend_gates_orca_tool_only_when_selected
 test_crew_dispatch_active_rules_are_surfaced
 test_crew_dispatch_validation
+test_review_tool_override_is_validated_and_surfaced
