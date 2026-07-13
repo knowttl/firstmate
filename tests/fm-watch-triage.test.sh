@@ -286,6 +286,7 @@ test_parked_run_surfaced_without_pane_staleness() {
   dir=$(make_case parked-run); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; drain_out="$dir/drain.out"
   fm_write_meta "$state/task.meta" "window=test:fm-task" "kind=ship"
+  touch "$state/.parked-provisional-since-task"
   export FM_FAKE_CREW_STATE='state: parked · source: run-step · run-id: 01RUN · branch: fm/task · gate: review · gate-occurrence: 1000 · parked 1h44m at review: 2 finding(s)'
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
     FM_PARKED_SCAN_INTERVAL=0 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
@@ -297,6 +298,7 @@ test_parked_run_surfaced_without_pane_staleness() {
   grep "$(printf '\tparked\t')" "$drain_out" | grep -F "parked 1h44m" >/dev/null \
     || fail "parked run was not queued with its duration"
   [ -e "$state/.parked-task" ] || fail "parked run did not record its repeat-wake suppressor"
+  [ ! -e "$state/.parked-provisional-since-task" ] || fail "authoritative parked result did not clear the provisional timer"
   unset FM_FAKE_CREW_STATE
   pass "a branch-matched parked run wakes immediately with duration, independent of pane staleness"
 }
@@ -306,7 +308,7 @@ test_consecutive_parked_gates_are_surfaced() {
   dir=$(make_case consecutive-parked); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"
   fm_write_meta "$state/task.meta" "window=test:fm-task" "kind=ship"
-  printf '%s\n' 'run-id: 01RUN · gate: review · gate-occurrence: 1000' > "$state/.parked-task"
+  printf '%s\n' 'run-id: 01RUN · branch: fm/task · gate: review · gate-occurrence: 1000' > "$state/.parked-task"
   export FM_FAKE_CREW_STATE='state: parked · source: run-step · run-id: 01RUN · branch: fm/task · gate: test · gate-occurrence: 2000 · parked 1m at test'
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
     FM_PARKED_SCAN_INTERVAL=0 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
@@ -314,7 +316,7 @@ test_consecutive_parked_gates_are_surfaced() {
   pid=$!
   wait_for_exit "$pid" 40 || fail "watcher suppressed a new gate in the same run"
   grep -F "gate: test" "$out" >/dev/null || fail "watcher did not surface the new gate identity"
-  [ "$(cat "$state/.parked-task")" = 'run-id: 01RUN · gate: test · gate-occurrence: 2000' ] || fail "parked marker did not advance to the new gate identity"
+  [ "$(cat "$state/.parked-task")" = 'run-id: 01RUN · branch: fm/task · gate: test · gate-occurrence: 2000' ] || fail "parked marker did not advance to the new gate identity"
   unset FM_FAKE_CREW_STATE
   pass "a new gate in the same run is not suppressed by the previous parked marker"
 }
@@ -324,7 +326,7 @@ test_same_gate_reentry_is_surfaced() {
   dir=$(make_case same-gate-reentry); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"
   fm_write_meta "$state/task.meta" "window=test:fm-task" "kind=ship"
-  printf '%s\n' 'run-id: 01RUN · gate: review · gate-occurrence: 1000' > "$state/.parked-task"
+  printf '%s\n' 'run-id: 01RUN · branch: fm/task · gate: review · gate-occurrence: 1000' > "$state/.parked-task"
   export FM_FAKE_CREW_STATE='state: parked · source: run-step · run-id: 01RUN · branch: fm/task · gate: review · gate-occurrence: 2000 · parked 1m at review'
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
     FM_PARKED_SCAN_INTERVAL=0 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
@@ -366,6 +368,33 @@ test_unknown_gate_occurrence_uses_bounded_fallback() {
   [ "$(cat "$state/.parked-task")" = 'branch: fm/task · gate-occurrence: unknown' ] || fail "watcher did not retain the fallback identity"
   unset FM_FAKE_CREW_STATE
   pass "identity-less gates suppress repeat scans and re-escalate on the wedge cadence"
+}
+
+test_unknown_gate_occurrence_preserves_detailed_identity() {
+  local dir state fakebin out pid identity
+  dir=$(make_case unknown-gate-occurrence-flap); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  fm_write_meta "$state/task.meta" "kind=ship"
+  identity='run-id: 01RUN · branch: fm/task · gate: review · gate-occurrence: 1000'
+  printf '%s\n' "$identity" > "$state/.parked-task"
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · run-id: 01RUN · branch: fm/task · gate: review · gate-occurrence: unknown · parked 1m at review'
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  wait_live "$pid" 30 || fail "watcher resurfaced a detailed gate when identity enrichment failed"
+  reap "$pid"
+  [ "$(cat "$state/.parked-task")" = "$identity" ] || fail "identity fallback replaced the detailed parked marker"
+  [ ! -s "$state/.wake-queue" ] || fail "identity enrichment failure queued a duplicate parked wake"
+  touch -d '10 minutes ago' "$state/.parked-task" 2>/dev/null || touch -t 202001010000 "$state/.parked-task"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not re-escalate a detailed gate during prolonged enrichment failure"
+  [ "$(cat "$state/.parked-task")" = "$identity" ] || fail "bounded re-escalation replaced the detailed parked marker"
+  unset FM_FAKE_CREW_STATE
+  pass "identity enrichment flapping preserves detailed markers and bounded re-escalation"
 }
 
 test_provisional_run_list_preserves_parked_marker() {
@@ -978,6 +1007,7 @@ test_working_note_not_working_surfaced
 test_parked_run_surfaced_without_pane_staleness
 test_consecutive_parked_gates_are_surfaced
 test_unknown_gate_occurrence_uses_bounded_fallback
+test_unknown_gate_occurrence_preserves_detailed_identity
 test_provisional_run_list_preserves_parked_marker
 test_provisional_run_list_is_bounded_then_escalated
 test_same_gate_reentry_is_surfaced

@@ -346,18 +346,22 @@ newly_parked_runs() {
     provisional_since="$STATE/.parked-provisional-since-$id"
     case "$line" in
       "state: parked "*"source: run-step"*)
+        rm -f "$provisional_since"
         case "$line" in
           *"run-id: "*" · branch: "*" · gate: "*" · gate-occurrence: "*" · "*)
             run_id=${line#*run-id: }; run_id=${run_id%% ·*}
             branch=${line#* · branch: }; branch=${branch%% ·*}
             gate=${line#* · gate: }; gate=${gate%% ·*}
             occurrence=${line#* · gate-occurrence: }; occurrence=${occurrence%% ·*}
+            previous=$(cat "$marker" 2>/dev/null || true)
             if [ "$occurrence" = unknown ]; then
               identity="branch: $branch · gate-occurrence: unknown"
+              case "$previous" in
+                *" · branch: $branch · gate: "*|"run-id: "*" · gate: "*" · gate-occurrence: "*) identity=$previous ;;
+              esac
             else
-              identity="run-id: $run_id · gate: $gate · gate-occurrence: $occurrence"
+              identity="run-id: $run_id · branch: $branch · gate: $gate · gate-occurrence: $occurrence"
             fi
-            previous=$(cat "$marker" 2>/dev/null || true)
             marker_age=$(age_of "$marker")
             if [ "$previous" != "$identity" ] || { [ "$occurrence" = unknown ] && [ "$marker_age" -ge "$STALE_ESCALATE_SECS" ]; }; then
               printf '%s\t%s\t%s\n' "$id" "$identity" "$line"
