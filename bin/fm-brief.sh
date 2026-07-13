@@ -111,6 +111,11 @@ Use this only for material phase changes, a captain decision, a real blocker, a 
 This is also how you return the answer to a marked from-firstmate request above.
 Routine internal supervision, heartbeats, retries, and crewmate churn stay inside your own home and must not touch that status file.
 
+# Bounded supervision
+After asking a crewmate a question or triggering its validation, set a bounded re-check within two minutes instead of polling open-endedly.
+Treat an in-pane answer, a stopped crew, or state: parked from a run-step read as consumable action: respond, consume the answer, or escalate upward.
+Never describe a crew as running or fixing without a fresh bin/fm-crew-state.sh <id> run-step read backing that claim.
+
 # Definition of done
 You are persistent by default. Do not exit just because your queue is empty.
 On startup and restart, run normal firstmate bootstrap and recovery through \`bin/fm-session-start.sh\` for your own home, but only to RECONCILE work that is already yours: in-flight crewmates, tracked backlog items, and durable watches recorded in this home.
@@ -251,6 +256,8 @@ $RULE1
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 6. If a decision belongs to a human (product choices, destructive actions, ask-user findings),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
+7. After triggering no-mistakes validation, re-check it within two minutes rather than polling open-endedly.
+   Treat awaiting_agent: parked or state: parked from a run-step read as an act-now signal: respond to the gate or escalate with needs-decision.
 
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.

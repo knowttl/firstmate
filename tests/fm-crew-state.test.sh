@@ -341,6 +341,7 @@ test_genuine_parked_not_superseded() {
   local out; out=$(run_crew_state "$d" feat-c)
   assert_contains "$out" "state: parked" "genuine parked run -> parked"
   assert_contains "$out" "source: run-step" "parked -> run-step source"
+  assert_contains "$out" "parked 2m10s at review" "parked includes its awaiting duration"
   assert_contains "$out" "2 finding(s)" "parked includes gate finding count"
   assert_contains "$out" "ask-user" "parked surfaces ask-user finding"
   assert_not_contains "$out" "superseded" "agreeing parked+needs-decision not flagged stale"

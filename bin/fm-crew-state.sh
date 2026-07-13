@@ -22,7 +22,7 @@
 #   2. Matching no-mistakes run for this crew's branch, active or terminal
 #      (from `axi status`, or the coarse `no-mistakes runs` fallback)?
 #      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
-#      awaiting_approval/fix_review -> parked (with gate findings), terminal
+#      awaiting_approval/fix_review -> parked (with gate duration/findings), terminal
 #      passed/checks-passed -> done, failed/cancelled -> failed.
 #   3. Reconcile the status log: if its last line says needs-decision/blocked but
 #      the run-step shows the run moved on, the log is deterministically stale and
@@ -388,6 +388,7 @@ if [ "$HAVE_RUN" = 1 ]; then
     status=$(strip_quotes "$(nm_field status)")
     outcome=$(strip_quotes "$(nm_field outcome)")
     awaiting=$(printf '%s\n' "$RUN_OUT" | grep -E '^[[:space:]]*awaiting_agent:' | head -1 || true)
+    awaiting=$(trim "${awaiting#*:}")
     gate_status=$(nm_gate_status)
     has_gate=0
     nm_has_gate && has_gate=1
@@ -409,7 +410,7 @@ if [ "$HAVE_RUN" = 1 ]; then
       [ -n "$gate" ] || gate=$status
       [ -n "$gate" ] || gate=gate
       RUN_STATE=parked
-      RUN_DETAIL="parked at $gate"
+      RUN_DETAIL="${awaiting:-parked} at $gate"
       fcount=$(nm_gate_findings_count)
       [ -n "$fcount" ] && RUN_DETAIL="$RUN_DETAIL: $fcount finding(s)"
       if printf '%s\n' "$RUN_OUT" | grep -q 'ask-user'; then

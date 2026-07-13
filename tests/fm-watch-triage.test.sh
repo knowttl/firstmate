@@ -277,6 +277,28 @@ test_working_note_not_working_surfaced() {
   pass "a no-verb working: note whose crew is idle with no running pipeline is surfaced"
 }
 
+# --- parked run scan: a gate wakes independently of any pane transition -------
+
+test_parked_run_surfaced_without_pane_staleness() {
+  local dir state fakebin out drain_out pid
+  dir=$(make_case parked-run); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  fm_write_meta "$state/task.meta" "window=test:fm-task" "kind=ship"
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · parked 1h44m at review: 2 finding(s)'
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not wake for a parked run without waiting for pane staleness"
+  grep -F "parked: task (state: parked" "$out" >/dev/null || fail "watcher did not print the parked-run wake"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the parked run failed"
+  grep "$(printf '\tparked\t')" "$drain_out" | grep -F "parked 1h44m" >/dev/null \
+    || fail "parked run was not queued with its duration"
+  [ -e "$state/.parked-task" ] || fail "parked run did not record its repeat-wake suppressor"
+  unset FM_FAKE_CREW_STATE
+  pass "a branch-matched parked run wakes immediately with duration, independent of pane staleness"
+}
+
 # --- actionable wakes are surfaced (queue + exit) ---------------------------
 
 test_actionable_signal_surfaced() {
@@ -653,6 +675,7 @@ test_provably_working_signal_absorbed
 test_turn_ended_provably_working_absorbed
 test_turn_ended_not_working_surfaced
 test_working_note_not_working_surfaced
+test_parked_run_surfaced_without_pane_staleness
 test_actionable_signal_surfaced
 test_terminal_stale_surfaced
 test_stale_terminal_status_overridden_by_active_run

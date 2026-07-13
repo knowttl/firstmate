@@ -20,6 +20,8 @@
 #                          terminal (captain-relevant) or non-terminal (no verb),
 #                          both surfaced at once. A provably-working stale past the
 #                          wedge threshold also surfaces. Unless afk is active.
+#   parked: <task>         a branch-matched no-mistakes run is awaiting_agent;
+#                          always actionable, independent of pane activity.
 #   check: <script>: <out> per-task check output, always actionable
 #   heartbeat              fleet-scan backstop found an unsurfaced captain-relevant
 #                          status, unless afk is active
@@ -103,6 +105,8 @@ HEARTBEAT=${FM_HEARTBEAT:-600}        # base seconds between heartbeat scans
 HEARTBEAT_MAX=${FM_HEARTBEAT_MAX:-7200}  # heartbeat backoff cap
 CHECK_INTERVAL=${FM_CHECK_INTERVAL:-300}  # seconds between *.check.sh sweeps
 CHECK_TIMEOUT=${FM_CHECK_TIMEOUT:-30}     # seconds allowed per *.check.sh
+PARKED_SCAN_INTERVAL=${FM_PARKED_SCAN_INTERVAL:-60}  # seconds between direct no-mistakes gate scans
+case "$PARKED_SCAN_INTERVAL" in ''|*[!0-9]*) PARKED_SCAN_INTERVAL=60 ;; esac
 SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trailing
                                       # signals (a status write, then the same turn's
                                       # turn-end hook) coalesce into one wake
@@ -264,6 +268,33 @@ wedge_timer_check() {  # <window> <since-file> <triage-label>
   esac
 }
 
+# Print one "<task>\t<state line>" row for each newly observed branch-matched
+# no-mistakes run parked at an awaiting_agent gate. This runs independently of
+# pane hashes because a gate may leave a pane looking busy or unchanged forever.
+# A sentinel suppresses repeat wakes for the same parked run. It is cleared only
+# when a later authoritative run-step read proves that the run moved on; an
+# unreadable transient must not turn into alert spam.
+newly_parked_runs() {
+  local meta id kind line marker
+  for meta in "$STATE"/*.meta; do
+    [ -e "$meta" ] || continue
+    kind=$(grep '^kind=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+    [ -n "$kind" ] || kind=ship
+    [ "$kind" = ship ] || continue
+    id=$(basename "$meta"); id=${id%.meta}
+    line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null || true)
+    marker="$STATE/.parked-$id"
+    case "$line" in
+      "state: parked "*"source: run-step"*)
+        [ -e "$marker" ] || printf '%s\t%s\n' "$id" "$line"
+        ;;
+      "state: "*"source: run-step"*)
+        rm -f "$marker"
+        ;;
+    esac
+  done
+}
+
 # Check and heartbeat cadence must survive actionable exits and restarts: the
 # watcher may be relaunched before in-memory counters reach their threshold on a
 # busy fleet. Persist the schedule as file mtimes instead.
@@ -393,6 +424,25 @@ while :; do
       fi
     done
     touch "$STATE/.last-check"
+  fi
+
+  # A parked run is an agent-action gate, not a healthy long-running validation.
+  # Check it directly on a bounded cadence so its supervisor wakes even if the
+  # crew pane never becomes stale or reports a new status line.
+  if [ "$(age_of "$STATE/.last-parked-scan")" -ge "$PARKED_SCAN_INTERVAL" ]; then
+    parked=$(newly_parked_runs)
+    touch "$STATE/.last-parked-scan"
+    if [ -n "$parked" ]; then
+      while IFS=$(printf '\t') read -r id line; do
+        [ -n "$id" ] || continue
+        reason="parked: $id ($line)"
+        fm_wake_append parked "$id" "$reason" || exit 1
+        printf 'parked\n' > "$STATE/.parked-$id"
+      done <<EOF
+$parked
+EOF
+      wake "$reason"
+    fi
   fi
 
   # On the first changed signal, linger one grace period and re-scan before

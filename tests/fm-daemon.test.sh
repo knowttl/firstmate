@@ -73,6 +73,15 @@ test_classify_check_and_unknown_escalate() {
   pass "check + unknown escalate; heartbeat self-handles"
 }
 
+test_parked_wake_escalates() {
+  local out
+  is_wake_reason "parked: crew-x (state: parked · source: run-step)" \
+    || fail "parked run was not recognized as a watcher wake"
+  out=$(classify_parked "parked: crew-x (state: parked · source: run-step)")
+  case "$out" in escalate\|*) ;; *) fail "parked run did not escalate: $out" ;; esac
+  pass "parked watcher wakes escalate to the away-mode supervisor"
+}
+
 test_stale_transient_self_records_marker() {
   local dir state out key
   dir=$(make_supercase stale-transient)
@@ -972,6 +981,7 @@ test_daemon_state_root_uses_fm_home
 test_classify_routine_signal_self
 test_classify_terminal_signal_escalates
 test_classify_check_and_unknown_escalate
+test_parked_wake_escalates
 test_stale_transient_self_records_marker
 test_stale_terminal_escalates
 test_housekeeping_persistent_stale_escalates
