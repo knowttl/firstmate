@@ -334,6 +334,24 @@ test_same_gate_reentry_is_surfaced() {
   pass "same-named gate re-entry is not suppressed"
 }
 
+test_unknown_gate_occurrence_is_never_suppressed() {
+  local dir state fakebin out pid
+  dir=$(make_case unknown-gate-occurrence); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  fm_write_meta "$state/task.meta" "window=test:fm-task" "kind=ship"
+  printf '%s\n' 'run-id: 01RUN · gate: review · gate-occurrence: unknown' > "$state/.parked-task"
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · run-id: 01RUN · gate: review · gate-occurrence: unknown · parked 1m at review'
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher suppressed a gate with unknown occurrence identity"
+  grep -F "gate-occurrence: unknown" "$out" >/dev/null || fail "watcher did not surface the unknown gate occurrence"
+  [ ! -e "$state/.parked-task" ] || fail "watcher persisted an unknown occurrence suppressor"
+  unset FM_FAKE_CREW_STATE
+  pass "unknown gate occurrences are never persistently suppressed"
+}
+
 test_multiple_parked_runs_emit_one_afk_wake() {
   local dir state fakebin out drain_out pid
   dir=$(make_case multiple-parked); state="$dir/state"; fakebin="$dir/fakebin"
@@ -367,13 +385,13 @@ test_parked_scan_has_one_fleet_deadline() {
   done
   cat > "$fakebin/fm-crew-state.sh" <<'SH'
 #!/usr/bin/env bash
-sleep 2
+sleep 5
 printf '%s\n' 'state: unknown · source: none · delayed fake'
 SH
   chmod +x "$fakebin/fm-crew-state.sh"
   started=$(date +%s)
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
-    FM_PARKED_SCAN_INTERVAL=0 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_PARKED_SCAN_INTERVAL=0 FM_PARKED_SCAN_TIMEOUT=1 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   while [ ! -e "$state/.last-parked-scan" ] && kill -0 "$pid" 2>/dev/null; do
@@ -382,7 +400,7 @@ SH
   elapsed=$(($(date +%s) - started))
   reap "$pid"
   [ -e "$state/.last-parked-scan" ] || fail "bounded parked scan did not finish"
-  [ "$elapsed" -lt 4 ] || fail "parked scan serialized per-crew timeouts (${elapsed}s)"
+  [ "$elapsed" -lt 4 ] || fail "parked scan exceeded its complete-read deadline (${elapsed}s)"
   pass "the full parked-run scan has one fleet-wide deadline"
 }
 
@@ -764,6 +782,7 @@ test_turn_ended_not_working_surfaced
 test_working_note_not_working_surfaced
 test_parked_run_surfaced_without_pane_staleness
 test_consecutive_parked_gates_are_surfaced
+test_unknown_gate_occurrence_is_never_suppressed
 test_same_gate_reentry_is_surfaced
 test_multiple_parked_runs_emit_one_afk_wake
 test_parked_scan_has_one_fleet_deadline

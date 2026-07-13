@@ -107,6 +107,8 @@ CHECK_INTERVAL=${FM_CHECK_INTERVAL:-300}  # seconds between *.check.sh sweeps
 CHECK_TIMEOUT=${FM_CHECK_TIMEOUT:-30}     # seconds allowed per *.check.sh
 PARKED_SCAN_INTERVAL=${FM_PARKED_SCAN_INTERVAL:-60}  # seconds between direct no-mistakes gate scans
 case "$PARKED_SCAN_INTERVAL" in ''|*[!0-9]*) PARKED_SCAN_INTERVAL=60 ;; esac
+PARKED_SCAN_TIMEOUT=${FM_PARKED_SCAN_TIMEOUT:-15}  # seconds allowed for each complete crew-state read
+case "$PARKED_SCAN_TIMEOUT" in ''|*[!0-9]*|0) PARKED_SCAN_TIMEOUT=15 ;; esac
 SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trailing
                                       # signals (a status write, then the same turn's
                                       # turn-end hook) coalesce into one wake
@@ -274,6 +276,16 @@ wedge_timer_check() {  # <window> <since-file> <triage-label>
 # A sentinel suppresses repeat wakes for the same parked run. It is cleared only
 # when a later authoritative run-step read proves that the run moved on; an
 # unreadable transient must not turn into alert spam.
+bounded_crew_state() {  # <task>
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$PARKED_SCAN_TIMEOUT" "$FM_CREW_STATE_BIN" "$1"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$PARKED_SCAN_TIMEOUT" "$FM_CREW_STATE_BIN" "$1"
+  elif command -v perl >/dev/null 2>&1; then
+    perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$PARKED_SCAN_TIMEOUT" "$FM_CREW_STATE_BIN" "$1"
+  fi
+}
+
 newly_parked_runs() {
   local meta id kind line marker identity previous run_id gate occurrence scan_dir count i
   local -a ids pids
@@ -288,7 +300,7 @@ newly_parked_runs() {
     [ "$kind" = ship ] || continue
     id=$(basename "$meta"); id=${id%.meta}
     ids[$count]=$id
-    ("$FM_CREW_STATE_BIN" "$id" > "$scan_dir/$count" 2>/dev/null || true) &
+    (bounded_crew_state "$id" > "$scan_dir/$count" 2>/dev/null || true) &
     pids[$count]=$!
     count=$((count + 1))
   done
@@ -309,7 +321,8 @@ newly_parked_runs() {
         occurrence=${line#* · gate-occurrence: }; occurrence=${occurrence%% ·*}
         identity="run-id: $run_id · gate: $gate · gate-occurrence: $occurrence"
         previous=$(cat "$marker" 2>/dev/null || true)
-        [ "$previous" = "$identity" ] || printf '%s\t%s\t%s\n' "$id" "$identity" "$line"
+        [ "$occurrence" = unknown ] || [ "$previous" != "$identity" ] || continue
+        printf '%s\t%s\t%s\n' "$id" "$identity" "$line"
         ;;
       "state: "*"source: run-step"*)
         rm -f "$marker"
@@ -462,7 +475,10 @@ while :; do
         [ -n "$id" ] || continue
         reason="parked: $id ($line)"
         fm_wake_append parked "$id" "$reason" || exit 1
-        printf '%s\n' "$identity" > "$STATE/.parked-$id"
+        case "$identity" in
+          *"gate-occurrence: unknown") rm -f "$STATE/.parked-$id" ;;
+          *) printf '%s\n' "$identity" > "$STATE/.parked-$id" ;;
+        esac
         if [ -n "$parked_reason" ]; then
           parked_reason="$parked_reason; ${reason#parked: }"
         else
