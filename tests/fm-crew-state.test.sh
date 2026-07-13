@@ -554,7 +554,7 @@ EOF
   pass "another branch's run is ignored, falls back"
 }
 
-test_coarse_running_row_is_not_authoritative() {
+test_coarse_running_row_is_provisionally_active() {
   reset_fakes
   local d; d=$(new_case coarse-running)
   make_repo_on_branch "$d/wt" fm/feat-coarse
@@ -564,8 +564,9 @@ test_coarse_running_row_is_not_authoritative() {
   FM_FAKE_RUNS_LIST='running fm/feat-coarse bbbbbbb 2026-07-02 22:05'
   FM_FAKE_BUSY=0
   local out; out=$(run_crew_state "$d" feat-coarse)
-  assert_not_contains "$out" "source: run-step" "coarse running row cannot disprove awaiting_agent"
-  pass "coarse cross-branch running status is not authoritative"
+  assert_contains "$out" "state: working" "coarse running row did not preserve active-run behavior"
+  assert_contains "$out" "source: run-list" "coarse running row was not marked provisional"
+  pass "coarse cross-branch running status is provisionally active"
 }
 
 # (f) no run for this crew + a busy pane -> working via pane
@@ -809,9 +810,6 @@ test_provably_working_via_runs_list_fallback() {
   make_fakebin "$d" >/dev/null
   fm_write_meta "$d/state/feat-provable.meta" "window=fm:fm-feat-provable" "worktree=$d/wt" "kind=ship"
   FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
-  FM_FAKE_AXI_STATUS_RUN="$(run_running fm/feat-provable)"
-  FM_FAKE_REPO_PATH="$d/repo"
-  FM_FAKE_RUN_IDENTITY='01RUN|'
   FM_FAKE_RUNS_LIST="$(cat <<'EOF'
   running    fm/other-crew aaaaaaa  2026-07-02 22:10
   running    fm/feat-provable bbbbbbb  2026-07-02 22:05
@@ -819,7 +817,7 @@ EOF
 )"
   PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" crew_is_provably_working feat-provable \
     || fail "cross-branch attribution via the runs list was not treated as provably working"
-  pass "crew_is_provably_working absorbs a validating crew found only via the runs-list fallback"
+  pass "crew_is_provably_working absorbs a validating crew when identity enrichment is unavailable"
 }
 
 test_not_provably_working_when_stopped() {
@@ -865,7 +863,7 @@ test_cross_branch_attribution_via_runs_list
 test_cross_branch_parked_run_uses_detailed_status
 test_cross_branch_attribution_picks_most_recent_row
 test_other_branch_run_ignored
-test_coarse_running_row_is_not_authoritative
+test_coarse_running_row_is_provisionally_active
 test_no_run_busy_pane
 test_no_run_herdr_unknown_uses_backend_capture
 test_no_run_herdr_idle_agent_status_corroborated_by_busy_pane

@@ -289,7 +289,7 @@ bounded_crew_state() {  # <task>
 }
 
 newly_parked_runs() {
-  local meta id kind line marker identity previous run_id gate occurrence scan_dir cursor count start end i
+  local meta id kind line marker identity previous run_id branch gate occurrence marker_age scan_dir cursor count start end i
   local -a ids pids
   scan_dir="$STATE/.parked-scan-$$"
   rm -rf "$scan_dir"
@@ -339,13 +339,19 @@ newly_parked_runs() {
     case "$line" in
       "state: parked "*"source: run-step"*)
         case "$line" in
-          *"run-id: "*" · gate: "*" · gate-occurrence: "*" · "*)
+          *"run-id: "*" · branch: "*" · gate: "*" · gate-occurrence: "*" · "*)
             run_id=${line#*run-id: }; run_id=${run_id%% ·*}
+            branch=${line#* · branch: }; branch=${branch%% ·*}
             gate=${line#* · gate: }; gate=${gate%% ·*}
             occurrence=${line#* · gate-occurrence: }; occurrence=${occurrence%% ·*}
-            identity="run-id: $run_id · gate: $gate · gate-occurrence: $occurrence"
+            if [ "$occurrence" = unknown ]; then
+              identity="branch: $branch · gate-occurrence: unknown"
+            else
+              identity="run-id: $run_id · gate: $gate · gate-occurrence: $occurrence"
+            fi
             previous=$(cat "$marker" 2>/dev/null || true)
-            if [ "$occurrence" = unknown ] || [ "$previous" != "$identity" ]; then
+            marker_age=$(age_of "$marker")
+            if [ "$previous" != "$identity" ] || { [ "$occurrence" = unknown ] && [ "$marker_age" -ge "$STALE_ESCALATE_SECS" ]; }; then
               printf '%s\t%s\t%s\n' "$id" "$identity" "$line"
             fi
             ;;
@@ -508,10 +514,7 @@ while :; do
         [ -n "$id" ] || continue
         reason="parked: $id ($line)"
         fm_wake_append parked "$id" "$reason" || exit 1
-        case "$identity" in
-          *"gate-occurrence: unknown") rm -f "$STATE/.parked-$id" ;;
-          *) printf '%s\n' "$identity" > "$STATE/.parked-$id" ;;
-        esac
+        printf '%s\n' "$identity" > "$STATE/.parked-$id"
         if [ -n "$parked_reason" ]; then
           parked_reason="$parked_reason; ${reason#parked: }"
         else

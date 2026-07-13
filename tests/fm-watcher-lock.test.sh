@@ -568,7 +568,7 @@ test_arm_propagates_immediate_parked_wake_before_confirmation() {
   armout="$dir/arm.out"
   drain_out="$dir/drain.out"
   fm_write_meta "$state/task.meta" "window=test:fm-task" "kind=ship"
-  export FM_FAKE_CREW_STATE='state: parked · source: run-step · run-id: 01RUN · gate: review · gate-occurrence: 1000 · parked 1m at review'
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · run-id: 01RUN · branch: fm/task · gate: review · gate-occurrence: 1000 · parked 1m at review'
   rc=0
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
     FM_GUARD_GRACE=0 FM_PARKED_SCAN_INTERVAL=0 FM_POLL=5 FM_SIGNAL_GRACE=1 \

@@ -7,23 +7,24 @@
 # last EVENT, not the current STATE. After firstmate resolves a needs-decision
 # or blocked and the crew resumes (responds to the gate, the pipeline fixes, it
 # re-validates), the log's last line stays stale. This helper never infers the
-# current state from a tail of the log: it reads the authoritative source (a
-# no-mistakes run-step attributed to this crew's branch, else the pane
-# busy-signature) and reconciles the possibly-stale log against it.
+# current state from a tail of the log: it reads a no-mistakes run attributed
+# to this crew's branch, else the pane busy-signature, and reconciles the
+# possibly-stale log against it.
 #
-# The determinism lives entirely here - only run-step / pane / log reads plus
-# fixed mapping logic, no heuristics and no LLM. Output is one stable, parseable,
-# token-tight line firstmate can read every heartbeat:
+# The determinism lives entirely here - only run-step / run-list / pane / log
+# reads plus fixed mapping logic, no heuristics and no LLM. Output is one stable,
+# parseable, token-tight line firstmate can read every heartbeat:
 #
-#   state: <working|parked|done|blocked|failed|unknown> · source: <run-step|pane|status-log|none> · <detail>
+#   state: <working|parked|done|blocked|failed|unknown> · source: <run-step|run-list|pane|status-log|none> · <detail>
 #
 # Logic, in order:
 #   1. Resolve worktree + backend target + kind from state/<id>.meta.
 #   2. Matching no-mistakes run for this crew's branch, active or terminal
 #      (from `axi status`, or the coarse `no-mistakes runs` fallback)?
-#      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
+#      A detailed run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
 #      awaiting_approval/fix_review -> parked (with gate duration/findings), terminal
-#      passed/checks-passed -> done, failed/cancelled -> failed.
+#      passed/checks-passed -> done, failed/cancelled -> failed. A coarse running
+#      row is provisional and reported with source run-list.
 #   3. Reconcile the status log: if its last line says needs-decision/blocked but
 #      the run-step shows the run moved on, the log is deterministically stale and
 #      is flagged superseded. A genuinely parked run plus a needs-decision log
@@ -404,7 +405,7 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
       if [ "$HAVE_RUN" = 0 ]; then
         COARSE_STATUS=$(nm_runs_status_for_branch "$CREW_BRANCH")
       fi
-      if [ "$HAVE_RUN" = 0 ] && [ -n "$COARSE_STATUS" ] && [ "$COARSE_STATUS" != running ]; then
+      if [ "$HAVE_RUN" = 0 ] && [ -n "$COARSE_STATUS" ]; then
         HAVE_RUN=1
         RUN_SOURCE=coarse
       fi
@@ -418,8 +419,7 @@ if [ "$HAVE_RUN" = 1 ]; then
   RUN_STATE=working
   RUN_DETAIL=""
   if [ "$RUN_SOURCE" = coarse ]; then
-    # No step/gate detail is available from the plain runs list. Running rows
-    # never reach this path because they cannot prove the run is not parked.
+    # No step/gate detail is available from the plain runs list.
     case "$COARSE_STATUS" in
       running)   RUN_STATE=working; RUN_DETAIL="validating (background run)" ;;
       completed) RUN_STATE="done";  RUN_DETAIL="run completed" ;;
@@ -460,7 +460,7 @@ if [ "$HAVE_RUN" = 1 ]; then
         case "$run_identity" in "$run_id|"*) RUN_AWAITING_SINCE=${run_identity#*|} ;; esac
       fi
       occurrence=${RUN_AWAITING_SINCE:-unknown}
-      RUN_DETAIL="run-id: $run_id${SEP}gate: $gate${SEP}gate-occurrence: $occurrence${SEP}${awaiting:-parked} at $gate"
+      RUN_DETAIL="run-id: $run_id${SEP}branch: $CREW_BRANCH${SEP}gate: $gate${SEP}gate-occurrence: $occurrence${SEP}${awaiting:-parked} at $gate"
       fcount=$(nm_gate_findings_count)
       [ -n "$fcount" ] && RUN_DETAIL="$RUN_DETAIL: $fcount finding(s)"
       if printf '%s\n' "$RUN_OUT" | grep -q 'ask-user'; then
@@ -498,6 +498,9 @@ if [ "$HAVE_RUN" = 1 ]; then
       ;;
   esac
 
+  if [ "$RUN_SOURCE" = coarse ] && [ "$RUN_STATE" = working ]; then
+    emit "$RUN_STATE" run-list "$RUN_DETAIL"
+  fi
   emit "$RUN_STATE" run-step "$RUN_DETAIL"
 fi
 
