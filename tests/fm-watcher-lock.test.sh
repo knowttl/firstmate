@@ -560,6 +560,28 @@ SH
   pass "arm propagates an immediate watcher wake before confirmation"
 }
 
+test_arm_propagates_immediate_parked_wake_before_confirmation() {
+  local dir state fakebin armout drain_out rc
+  dir=$(make_case arm-immediate-parked)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  armout="$dir/arm.out"
+  drain_out="$dir/drain.out"
+  fm_write_meta "$state/task.meta" "window=test:fm-task" "kind=ship"
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · run-id: 01RUN · gate: review · gate-occurrence: 1000 · parked 1m at review'
+  rc=0
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_GUARD_GRACE=0 FM_PARKED_SCAN_INTERVAL=0 FM_POLL=5 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" > "$armout" || rc=$?
+  unset FM_FAKE_CREW_STATE
+  [ "$rc" -eq 0 ] || fail "arm returned non-zero for an immediate parked wake (status $rc): $(cat "$armout")"
+  grep -F "parked: task (state: parked" "$armout" >/dev/null || fail "arm did not propagate the immediate parked wake"
+  ! grep -qF 'watcher: FAILED' "$armout" || fail "arm printed FAILED after a valid immediate parked wake"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" || fail "drain after immediate parked wake failed"
+  grep "$(printf '\tparked\t')" "$drain_out" | grep -F 'gate: review' >/dev/null || fail "immediate parked wake was not queued"
+  pass "arm propagates an immediate parked wake before confirmation"
+}
+
 test_arm_waits_for_peer_beacon_after_child_stands_down() {
   local dir state fakebin armout peer beater identity status
   dir=$(make_case arm-peer-startup-race)
@@ -637,5 +659,6 @@ test_arm_reports_healthy_for_live_fresh_watcher
 test_arm_starts_and_self_heals
 test_arm_hup_cleans_child_and_temp_output
 test_arm_propagates_immediate_wake_before_confirmation
+test_arm_propagates_immediate_parked_wake_before_confirmation
 test_arm_waits_for_peer_beacon_after_child_stands_down
 test_arm_fails_loud_when_no_fresh_watcher_confirmable

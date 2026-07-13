@@ -185,7 +185,6 @@ review_tool_name() {
       if [ -n "$v" ]; then
         case "$v" in
           *[!A-Za-z0-9._-]*|[.-]*) return 1 ;;
-          bash|brew|git|npm|sh|tmux|node|gh|curl|jq|orca|treehouse|no-mistakes|gh-axi|chrome-devtools-axi|tasks-axi) return 1 ;;
         esac
         printf '%s' "$v"
         return 0
@@ -194,8 +193,20 @@ review_tool_name() {
   fi
   printf 'lavish-axi'
 }
+
+review_tool_compatible() {
+  local help
+  help=$("$1" setup --help 2>&1) || return 1
+  printf '%s\n' "$help" | grep -Eq '(^|[[:space:]])setup hooks([[:space:]]|$)'
+}
+
 REVIEW_TOOL_VALID=1
 REVIEW_TOOL=$(review_tool_name) || { REVIEW_TOOL=lavish-axi; REVIEW_TOOL_VALID=0; }
+if [ "$REVIEW_TOOL_VALID" = 1 ] && command -v "$REVIEW_TOOL" >/dev/null 2>&1 \
+  && ! review_tool_compatible "$REVIEW_TOOL"; then
+  REVIEW_TOOL=lavish-axi
+  REVIEW_TOOL_VALID=0
+fi
 
 node_sqlite_compatible() {
   node -e "const { DatabaseSync } = require('node:sqlite'); if (typeof DatabaseSync !== 'function') process.exit(1)" >/dev/null 2>&1
