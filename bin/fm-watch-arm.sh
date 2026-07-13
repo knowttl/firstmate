@@ -78,7 +78,7 @@ report_healthy() {
 
 watch_output_has_wake() {
   local out=$1
-  grep -Eq '^(signal:|stale:|check:|heartbeat($|:))' "$out" 2>/dev/null
+  grep -Eq '^(signal:|stale:|parked:|possible-wedge:|supervision:|check:|heartbeat($|:))' "$out" 2>/dev/null
 }
 
 print_watch_output() {

@@ -21,7 +21,8 @@ TMP_ROOT=$(fm_test_tmproot fm-bootstrap-tests)
 make_fake_toolchain() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
-  fm_fake_exit0 "$fakebin" tmux node gh-axi chrome-devtools-axi lavish-axi
+  fm_fake_exit0 "$fakebin" tmux node gh-axi chrome-devtools-axi
+  make_fake_review_tool "$fakebin" lavish-axi
   cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
@@ -53,6 +54,19 @@ exit 0
 SH
   chmod +x "$fakebin/no-mistakes"
   printf '%s\n' "$fakebin"
+}
+
+make_fake_review_tool() {
+  local fakebin=$1 tool=$2
+  cat > "$fakebin/$tool" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = setup ] && [ "${2:-}" = --help ]; then
+  printf '%s\n' 'Usage: review-tool setup hooks'
+  exit 0
+fi
+exit 1
+SH
+  chmod +x "$fakebin/$tool"
 }
 
 add_tasks_axi() {
@@ -156,6 +170,23 @@ ROWS
   pass "bootstrap enforces no-mistakes minimum version"
 }
 
+test_node_sqlite_capability_is_optional() {
+  local case_dir fakebin out
+  case_dir="$TMP_ROOT/node-sqlite"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  cat > "$fakebin/node" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+  chmod +x "$fakebin/node"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  [ -z "$out" ] || fail "optional node:sqlite capability blocked bootstrap: $out"
+  pass "bootstrap keeps node:sqlite enrichment optional"
+}
+
 test_orca_backend_gates_orca_tool_only_when_selected() {
   local case_dir fakebin out missing_orca
   missing_orca="MISSING: orca (install: brew install orca  # or the platform's package manager)"
@@ -226,8 +257,54 @@ ROWS
   pass "bootstrap validates crew-dispatch.json and reports malformed or unverified configs"
 }
 
+test_review_tool_override_is_validated_and_surfaced() {
+  local case_dir fakebin out collision
+  case_dir="$TMP_ROOT/review-tool"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' atelier-axi > "$case_dir/home/config/review-tool"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  make_fake_review_tool "$fakebin" atelier-axi
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  [ "$out" = "REVIEW_TOOL_OVERRIDE: atelier-axi" ] || fail "valid review-tool override was not surfaced: $out"
+
+  printf '%s\n' 'atelier-axi; touch injected' > "$case_dir/home/config/review-tool"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  assert_contains "$out" "REVIEW_TOOL_OVERRIDE: invalid config/review-tool" "unsafe review-tool override was not rejected"
+  [ ! -e "$case_dir/home/injected" ] || fail "unsafe review-tool override executed shell syntax"
+
+  fm_fake_exit0 "$fakebin" report-viewer
+  for collision in sed grep awk true report-viewer; do
+    printf '%s\n' "$collision" > "$case_dir/home/config/review-tool"
+    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+      FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+    assert_contains "$out" "REVIEW_TOOL_OVERRIDE: invalid config/review-tool" \
+      "command without the review-tool interface was not rejected: $collision"
+  done
+  pass "bootstrap validates and surfaces the review-tool override"
+}
+
+test_incompatible_default_review_tool_is_reported() {
+  local case_dir fakebin out missing
+  case_dir="$TMP_ROOT/default-review-tool"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  fm_fake_exit0 "$fakebin" lavish-axi
+  missing="MISSING: lavish-axi (install: npm install -g lavish-axi && lavish-axi setup hooks)"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  [ "$out" = "$missing" ] || fail "incompatible default review tool was not reported: $out"
+  pass "bootstrap reports an incompatible default review tool"
+}
+
 test_bootstrap_reporting
 test_no_mistakes_min_version
+test_node_sqlite_capability_is_optional
 test_orca_backend_gates_orca_tool_only_when_selected
 test_crew_dispatch_active_rules_are_surfaced
 test_crew_dispatch_validation
+test_review_tool_override_is_validated_and_surfaced
+test_incompatible_default_review_tool_is_reported

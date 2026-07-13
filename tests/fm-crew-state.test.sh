@@ -71,6 +71,9 @@ case "${1:-}" in
     ;;
   runs)
     printf '%s\n' "${FM_FAKE_RUNS_LIST:-}" ;;
+  status)
+    sleep "${FM_FAKE_STATUS_DELAY:-0}"
+    printf '    repo:  %s\n' "${FM_FAKE_REPO_PATH:-}" ;;
 esac
 exit 0
 SH
@@ -118,6 +121,11 @@ esac
 exit 0
 SH
   chmod +x "$fb/no-mistakes" "$fb/tmux" "$fb/herdr"
+  cat > "$fb/node" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "${FM_FAKE_RUN_IDENTITY:-}"
+SH
+  chmod +x "$fb/node"
   printf '%s\n' "$fb"
 }
 
@@ -151,12 +159,16 @@ reset_fakes() {
   FM_FAKE_AXI_STATUS=""
   FM_FAKE_AXI_STATUS_RUN=""
   FM_FAKE_RUNS_LIST=""
+  FM_FAKE_RUN_IDENTITY=""
+  FM_FAKE_REPO_PATH=""
+  FM_FAKE_STATUS_DELAY=0
   FM_FAKE_BUSY=0
   FM_FAKE_TMUX_MISSING=0
   FM_FAKE_HERDR_BUSY=0
   FM_FAKE_HERDR_MISSING=0
   FM_FAKE_HERDR_AGENT_STATUS=""
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_TMUX_MISSING
+  export FM_FAKE_RUN_IDENTITY FM_FAKE_REPO_PATH FM_FAKE_STATUS_DELAY
   export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS
 }
 
@@ -341,10 +353,32 @@ test_genuine_parked_not_superseded() {
   local out; out=$(run_crew_state "$d" feat-c)
   assert_contains "$out" "state: parked" "genuine parked run -> parked"
   assert_contains "$out" "source: run-step" "parked -> run-step source"
+  assert_contains "$out" "parked 2m10s at review" "parked includes its awaiting duration"
   assert_contains "$out" "2 finding(s)" "parked includes gate finding count"
   assert_contains "$out" "ask-user" "parked surfaces ask-user finding"
   assert_not_contains "$out" "superseded" "agreeing parked+needs-decision not flagged stale"
   pass "genuine parked run is not flagged superseded"
+}
+
+test_parked_state_survives_slow_identity_enrichment() {
+  reset_fakes
+  local d out started elapsed
+  d=$(new_case parked-slow-identity)
+  make_repo_on_branch "$d/wt" fm/feat-slow-identity
+  make_fakebin "$d" >/dev/null
+  mkdir -p "$d/nm"
+  : > "$d/nm/state.sqlite"
+  fm_write_meta "$d/state/feat-slow-identity.meta" "window=fm:fm-feat-slow-identity" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_parked fm/feat-slow-identity)"
+  FM_FAKE_REPO_PATH="$d/repo"
+  FM_FAKE_STATUS_DELAY=5
+  started=$(date +%s)
+  out=$(PATH="$d/fakebin:$PATH" NM_HOME="$d/nm" FM_STATE_OVERRIDE="$d/state" "$CREW_STATE" feat-slow-identity)
+  elapsed=$(($(date +%s) - started))
+  assert_contains "$out" "state: parked" "slow optional identity lookup discarded an authoritative parked state"
+  assert_contains "$out" "gate-occurrence: unknown" "timed-out identity enrichment did not degrade safely"
+  [ "$elapsed" -lt 5 ] || fail "optional identity enrichment delayed parked output for ${elapsed}s"
+  pass "parked state is emitted when optional identity enrichment times out"
 }
 
 test_scalar_gate_parked_not_superseded() {
@@ -442,6 +476,9 @@ test_cross_branch_attribution_via_runs_list() {
   fm_write_meta "$d/state/feat-f.meta" "window=fm:fm-feat-f" "worktree=$d/wt" "kind=ship"
   # The repo-wide active/most-recent run belongs to a different crew's branch.
   FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_AXI_STATUS_RUN="$(run_running fm/feat-f)"
+  FM_FAKE_REPO_PATH="$d/repo"
+  FM_FAKE_RUN_IDENTITY='01RUN|'
   # Real `no-mistakes runs` shape: plain text, newest-first, no run id, no
   # quoting - "<status> <branch> <short-sha> <date> [<pr-url>]".
   FM_FAKE_RUNS_LIST="$(cat <<'EOF'
@@ -455,6 +492,22 @@ EOF
   pass "cross-branch run is attributed via the real runs list"
 }
 
+test_cross_branch_parked_run_uses_detailed_status() {
+  reset_fakes
+  local d; d=$(new_case crossbranch-parked)
+  make_repo_on_branch "$d/wt" fm/feat-parked
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-parked.meta" "window=fm:fm-feat-parked" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_AXI_STATUS_RUN="$(run_parked fm/feat-parked)"
+  FM_FAKE_REPO_PATH="$d/repo"
+  FM_FAKE_RUN_IDENTITY='01RUN|1720000000'
+  local out; out=$(run_crew_state "$d" feat-parked)
+  assert_contains "$out" "state: parked" "cross-branch detailed status preserves awaiting_agent"
+  assert_contains "$out" "gate-occurrence: 1720000000" "parked status includes its stable occurrence identity"
+  pass "cross-branch run ID is resolved before detailed parked classification"
+}
+
 # The runs list is newest-first; a branch with an OLDER completed run must not
 # shadow its own newer active one - the first (topmost) matching row wins.
 test_cross_branch_attribution_picks_most_recent_row() {
@@ -464,6 +517,9 @@ test_cross_branch_attribution_picks_most_recent_row() {
   make_fakebin "$d" >/dev/null
   fm_write_meta "$d/state/feat-fq.meta" "window=fm:fm-feat-fq" "worktree=$d/wt" "kind=ship"
   FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_AXI_STATUS_RUN="$(run_running fm/feat-fq)"
+  FM_FAKE_REPO_PATH="$d/repo"
+  FM_FAKE_RUN_IDENTITY='01RUN|'
   FM_FAKE_RUNS_LIST="$(cat <<'EOF'
   running    fm/other-crew aaaaaaa  2026-07-02 22:10
   running    fm/feat-fq ccccccc  2026-07-02 21:50
@@ -496,6 +552,37 @@ EOF
   assert_contains "$out" "source: status-log" "no own run -> falls back to status-log"
   assert_contains "$out" "state: done" "falls back to the log verb"
   pass "another branch's run is ignored, falls back"
+}
+
+test_coarse_running_row_is_provisionally_active() {
+  reset_fakes
+  local d; d=$(new_case coarse-running)
+  make_repo_on_branch "$d/wt" fm/feat-coarse
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-coarse.meta" "window=fm:fm-feat-coarse" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST='running fm/feat-coarse bbbbbbb 2026-07-02 22:05'
+  FM_FAKE_BUSY=0
+  local out; out=$(run_crew_state "$d" feat-coarse)
+  assert_contains "$out" "state: working" "coarse running row did not preserve active-run behavior"
+  assert_contains "$out" "source: run-list" "coarse running row was not marked provisional"
+  pass "coarse cross-branch running status is provisionally active"
+}
+
+test_empty_primary_status_uses_provisional_run_list() {
+  reset_fakes
+  local d; d=$(new_case empty-primary-status)
+  make_repo_on_branch "$d/wt" fm/feat-empty-primary
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-empty-primary.meta" "window=fm:fm-feat-empty-primary" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST='running fm/feat-empty-primary bbbbbbb 2026-07-02 22:05'
+  FM_FAKE_BUSY=1
+  local out; out=$(run_crew_state "$d" feat-empty-primary)
+  assert_contains "$out" "state: working" "empty primary status lost the matching run-list row"
+  assert_contains "$out" "source: run-list" "empty primary status bypassed provisional run attribution"
+  assert_not_contains "$out" "source: pane" "busy pane hid provisional run attribution"
+  pass "empty primary status falls back to provisional run-list evidence"
 }
 
 # (f) no run for this crew + a busy pane -> working via pane
@@ -679,8 +766,8 @@ SH
   assert_contains "$out" "source: pane" "timed-out no-mistakes -> pane source"
   [ "$elapsed" -lt 5 ] || fail "perl timeout did not bound no-mistakes calls (elapsed ${elapsed}s)"
   calls=$(awk 'END { print NR + 0 }' "$calls_file" 2>/dev/null || echo 0)
-  [ "$calls" -eq 1 ] || fail "empty no-mistakes status triggered extra lookups ($calls calls)"
-  pass "no timeout command uses perl bound"
+  [ "$calls" -eq 2 ] || fail "timed-out status did not use exactly one bounded run-list fallback ($calls calls)"
+  pass "no timeout command bounds status and run-list fallback"
 }
 
 # (i) kind=scout skips the run lookup entirely (its deliverable is a report).
@@ -746,7 +833,7 @@ EOF
 )"
   PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" crew_is_provably_working feat-provable \
     || fail "cross-branch attribution via the runs list was not treated as provably working"
-  pass "crew_is_provably_working absorbs a validating crew found only via the runs-list fallback"
+  pass "crew_is_provably_working absorbs a validating crew when identity enrichment is unavailable"
 }
 
 test_not_provably_working_when_stopped() {
@@ -782,14 +869,18 @@ test_active_run_is_authoritative
 test_stale_needs_decision_superseded
 test_stale_blocked_superseded
 test_genuine_parked_not_superseded
+test_parked_state_survives_slow_identity_enrichment
 test_scalar_gate_parked_not_superseded
 test_gate_block_parked_not_superseded
 test_ci_ready_done_log_beats_monitoring_run
 test_terminal_passed
 test_terminal_failed
 test_cross_branch_attribution_via_runs_list
+test_cross_branch_parked_run_uses_detailed_status
 test_cross_branch_attribution_picks_most_recent_row
 test_other_branch_run_ignored
+test_coarse_running_row_is_provisionally_active
+test_empty_primary_status_uses_provisional_run_list
 test_no_run_busy_pane
 test_no_run_herdr_unknown_uses_backend_capture
 test_no_run_herdr_idle_agent_status_corroborated_by_busy_pane

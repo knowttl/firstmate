@@ -7,23 +7,24 @@
 # last EVENT, not the current STATE. After firstmate resolves a needs-decision
 # or blocked and the crew resumes (responds to the gate, the pipeline fixes, it
 # re-validates), the log's last line stays stale. This helper never infers the
-# current state from a tail of the log: it reads the authoritative source (a
-# no-mistakes run-step attributed to this crew's branch, else the pane
-# busy-signature) and reconciles the possibly-stale log against it.
+# current state from a tail of the log: it reads a no-mistakes run attributed
+# to this crew's branch, else the pane busy-signature, and reconciles the
+# possibly-stale log against it.
 #
-# The determinism lives entirely here - only run-step / pane / log reads plus
-# fixed mapping logic, no heuristics and no LLM. Output is one stable, parseable,
-# token-tight line firstmate can read every heartbeat:
+# The determinism lives entirely here - only run-step / run-list / pane / log
+# reads plus fixed mapping logic, no heuristics and no LLM. Output is one stable,
+# parseable, token-tight line firstmate can read every heartbeat:
 #
-#   state: <working|parked|done|blocked|failed|unknown> · source: <run-step|pane|status-log|none> · <detail>
+#   state: <working|parked|done|blocked|failed|unknown> · source: <run-step|run-list|pane|status-log|none> · <detail>
 #
 # Logic, in order:
 #   1. Resolve worktree + backend target + kind from state/<id>.meta.
 #   2. Matching no-mistakes run for this crew's branch, active or terminal
 #      (from `axi status`, or the coarse `no-mistakes runs` fallback)?
-#      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
-#      awaiting_approval/fix_review -> parked (with gate findings), terminal
-#      passed/checks-passed -> done, failed/cancelled -> failed.
+#      A detailed run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
+#      awaiting_approval/fix_review -> parked (with gate duration/findings), terminal
+#      passed/checks-passed -> done, failed/cancelled -> failed. A coarse running
+#      row is provisional and reported with source run-list.
 #   3. Reconcile the status log: if its last line says needs-decision/blocked but
 #      the run-step shows the run moved on, the log is deterministically stale and
 #      is flagged superseded. A genuinely parked run plus a needs-decision log
@@ -55,6 +56,7 @@ META="$STATE/$ID.meta"
 LOG="$STATE/$ID.status"
 NM_TIMEOUT=${FM_CREW_STATE_NM_TIMEOUT:-10}
 case "$NM_TIMEOUT" in ''|*[!0-9]*) NM_TIMEOUT=10 ;; esac
+IDENTITY_TIMEOUT=2
 # How many of the most recent `no-mistakes runs` rows the cross-branch fallback
 # (nm_runs_status_for_branch, below) scans. Generous enough to still find a
 # branch's own run on a busy multi-crew fleet without listing the entire
@@ -202,13 +204,18 @@ if command -v timeout >/dev/null 2>&1; then HAVE_TIMEOUT=timeout
 elif command -v gtimeout >/dev/null 2>&1; then HAVE_TIMEOUT=gtimeout
 elif command -v perl >/dev/null 2>&1; then HAVE_TIMEOUT=perl
 fi
-nm_run() {  # <args...>
+nm_run_with_timeout() {  # <seconds> <args...>
+  local seconds=$1
+  shift
   case "$HAVE_TIMEOUT" in
-    timeout)  ( cd "$WT" && timeout "$NM_TIMEOUT" no-mistakes "$@" ) 2>/dev/null || true ;;
-    gtimeout) ( cd "$WT" && gtimeout "$NM_TIMEOUT" no-mistakes "$@" ) 2>/dev/null || true ;;
-    perl)     ( cd "$WT" && perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$NM_TIMEOUT" no-mistakes "$@" ) 2>/dev/null || true ;;
+    timeout)  ( cd "$WT" && timeout "$seconds" no-mistakes "$@" ) 2>/dev/null || true ;;
+    gtimeout) ( cd "$WT" && gtimeout "$seconds" no-mistakes "$@" ) 2>/dev/null || true ;;
+    perl)     ( cd "$WT" && perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$seconds" no-mistakes "$@" ) 2>/dev/null || true ;;
     *)        true ;;
   esac
+}
+nm_run() {  # <args...>
+  nm_run_with_timeout "$NM_TIMEOUT" "$@"
 }
 
 # Scalar value of a TOON key in the captured run output ($RUN_OUT).
@@ -280,7 +287,7 @@ log_reports_ci_ready() {
     *) return 1 ;;
   esac
 }
-# Coarse fallback for cross-branch attribution. `no-mistakes axi status` (bare)
+# Cross-branch attribution support. `no-mistakes axi status` (bare)
 # reports the active-or-most-recent run for the CURRENT branch when one
 # exists, else falls back to some other branch's run purely as informational
 # display (verified empirically: querying a worktree with its own active run
@@ -309,7 +316,8 @@ log_reports_ci_ready() {
 # is exact) - but branch + coarse status is exactly what this predicate needs:
 # is a run for THIS branch active right now. Echoes the first (most recent)
 # matching row's status word (running/completed/cancelled/failed), or empty
-# when the branch has no run within FM_CREW_STATE_RUNS_LIMIT rows.
+# when the branch has no run within FM_CREW_STATE_RUNS_LIMIT rows. A coarse
+# running row is never authoritative because it cannot reveal an agent gate.
 nm_runs_status_for_branch() {  # <branch>
   local branch=$1 out row st rest br
   out=$(nm_run runs --limit "$FM_CREW_STATE_RUNS_LIMIT")
@@ -329,6 +337,36 @@ nm_runs_status_for_branch() {  # <branch>
   return 0
 }
 
+nm_run_identity_for_branch() {  # <branch> -> <run-id>|<awaiting-agent-since>
+  local branch=$1 home db repo_out repo_path
+  local -a identity_runner
+  command -v node >/dev/null 2>&1 || return 0
+  home=${NM_HOME:-${HOME:-}/.no-mistakes}
+  db="$home/state.sqlite"
+  [ -r "$db" ] || return 0
+  repo_out=$(nm_run_with_timeout "$IDENTITY_TIMEOUT" status)
+  repo_path=$(printf '%s\n' "$repo_out" | sed -n 's/^[[:space:]]*repo:[[:space:]]*//p' | head -1)
+  [ -n "$repo_path" ] || return 0
+  case "$HAVE_TIMEOUT" in
+    timeout) identity_runner=(timeout "$IDENTITY_TIMEOUT" node) ;;
+    gtimeout) identity_runner=(gtimeout "$IDENTITY_TIMEOUT" node) ;;
+    perl) identity_runner=(perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$IDENTITY_TIMEOUT" node) ;;
+    *) return 0 ;;
+  esac
+  "${identity_runner[@]}" - "$db" "$repo_path" "$branch" <<'NODE' 2>/dev/null || true
+const { DatabaseSync } = require('node:sqlite');
+const [dbPath, repoPath, branch] = process.argv.slice(2);
+const db = new DatabaseSync(dbPath, { readOnly: true });
+const row = db.prepare(`
+  SELECT runs.id, runs.awaiting_agent_since
+  FROM runs JOIN repos ON repos.id = runs.repo_id
+  WHERE repos.working_path = ? AND runs.branch = ?
+  ORDER BY runs.created_at DESC LIMIT 1
+`).get(repoPath, branch);
+if (row) process.stdout.write(`${row.id}|${row.awaiting_agent_since || ''}`);
+NODE
+}
+
 # CREW_BRANCH is empty at detached HEAD (a just-spawned crew, or a scout's
 # scratch worktree); with no branch there is no run to attribute to this crew.
 CREW_BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
@@ -340,6 +378,7 @@ HAVE_RUN=0
 # run-step block below skips the TOON field parsing entirely for this crew.
 RUN_SOURCE=full
 COARSE_STATUS=""
+RUN_AWAITING_SINCE=""
 # Scouts and secondmates never drive a no-mistakes validation of their own
 # worktree, so skip the lookup for them and read state from pane/log directly.
 if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/null 2>&1; then
@@ -350,17 +389,24 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
       HAVE_RUN=1
     else
       # The active-or-most-recent run is for another branch (the CLI is alive
-      # and answered; only the attribution missed) - try the coarse fallback.
-      # Deliberately nested inside `[ -n "$RUN_OUT" ]`: an empty/timed-out
-      # primary call means the CLI itself did not respond, so retrying it
-      # immediately with a second bounded call would just double the wait
-      # for no better answer.
-      COARSE_STATUS=$(nm_runs_status_for_branch "$CREW_BRANCH")
-      if [ -n "$COARSE_STATUS" ]; then
-        HAVE_RUN=1
-        RUN_SOURCE=coarse
+      # and answered; only the attribution missed) - try to resolve this
+      # branch's detailed run directly.
+      run_identity=$(nm_run_identity_for_branch "$CREW_BRANCH")
+      run_id=${run_identity%%|*}
+      if [ -n "$run_identity" ] && [ -n "$run_id" ]; then
+        RUN_AWAITING_SINCE=${run_identity#*|}
+        RUN_OUT=$(nm_run axi status --run "$run_id")
+        run_branch=$(strip_quotes "$(nm_field branch)")
+        [ "$run_branch" = "$CREW_BRANCH" ] && HAVE_RUN=1
       fi
     fi
+  fi
+  if [ "$HAVE_RUN" = 0 ]; then
+    COARSE_STATUS=$(nm_runs_status_for_branch "$CREW_BRANCH")
+  fi
+  if [ -n "$COARSE_STATUS" ]; then
+    HAVE_RUN=1
+    RUN_SOURCE=coarse
   fi
 fi
 
@@ -370,13 +416,7 @@ if [ "$HAVE_RUN" = 1 ]; then
   RUN_STATE=working
   RUN_DETAIL=""
   if [ "$RUN_SOURCE" = coarse ]; then
-    # No step/gate detail is available from the plain runs list - only ever
-    # true/working, done, or failed. A crew genuinely parked at a gate still
-    # gets full detail once `axi status` reports its own branch again (e.g.
-    # once its own step is the most-recently-touched one), and its own
-    # needs-decision/blocked status-log append (a captain-relevant VERB) is
-    # surfaced through signal_reason_is_actionable regardless of this
-    # coarse-vs-full distinction, so a real gate is never silently missed.
+    # No step/gate detail is available from the plain runs list.
     case "$COARSE_STATUS" in
       running)   RUN_STATE=working; RUN_DETAIL="validating (background run)" ;;
       completed) RUN_STATE="done";  RUN_DETAIL="run completed" ;;
@@ -388,6 +428,7 @@ if [ "$HAVE_RUN" = 1 ]; then
     status=$(strip_quotes "$(nm_field status)")
     outcome=$(strip_quotes "$(nm_field outcome)")
     awaiting=$(printf '%s\n' "$RUN_OUT" | grep -E '^[[:space:]]*awaiting_agent:' | head -1 || true)
+    awaiting=$(trim "${awaiting#*:}")
     gate_status=$(nm_gate_status)
     has_gate=0
     nm_has_gate && has_gate=1
@@ -409,7 +450,14 @@ if [ "$HAVE_RUN" = 1 ]; then
       [ -n "$gate" ] || gate=$status
       [ -n "$gate" ] || gate=gate
       RUN_STATE=parked
-      RUN_DETAIL="parked at $gate"
+      run_id=$(strip_quotes "$(nm_field id)")
+      [ -n "$run_id" ] || run_id=unknown
+      if [ -z "$RUN_AWAITING_SINCE" ]; then
+        run_identity=$(nm_run_identity_for_branch "$CREW_BRANCH")
+        case "$run_identity" in "$run_id|"*) RUN_AWAITING_SINCE=${run_identity#*|} ;; esac
+      fi
+      occurrence=${RUN_AWAITING_SINCE:-unknown}
+      RUN_DETAIL="run-id: $run_id${SEP}branch: $CREW_BRANCH${SEP}gate: $gate${SEP}gate-occurrence: $occurrence${SEP}${awaiting:-parked} at $gate"
       fcount=$(nm_gate_findings_count)
       [ -n "$fcount" ] && RUN_DETAIL="$RUN_DETAIL: $fcount finding(s)"
       if printf '%s\n' "$RUN_OUT" | grep -q 'ask-user'; then
@@ -447,6 +495,9 @@ if [ "$HAVE_RUN" = 1 ]; then
       ;;
   esac
 
+  if [ "$RUN_SOURCE" = coarse ] && [ "$RUN_STATE" = working ]; then
+    emit "$RUN_STATE" run-list "$RUN_DETAIL"
+  fi
   emit "$RUN_STATE" run-step "$RUN_DETAIL"
 fi
 

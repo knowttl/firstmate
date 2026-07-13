@@ -54,6 +54,8 @@ test_ship_modes_generate_clean_briefs() {
     assert_present "$brief" "$id: brief was not scaffolded"
     assert_grep "# Definition of done" "$brief" "$id: brief missing Definition of done section"
     assert_grep "{TASK}" "$brief" "$id: brief missing the {TASK} placeholder"
+    assert_grep "re-check it within two minutes" "$brief" "$id: brief missing bounded validation re-check"
+    assert_grep "awaiting_agent: parked" "$brief" "$id: brief missing parked-gate action contract"
     assert_no_grep "EOF" "$brief" "$id: brief leaked a heredoc EOF marker (unterminated heredoc)"
   done
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
@@ -76,6 +78,22 @@ test_no_mistakes_dod_wording() {
   pass "fm-brief.sh: no-mistakes DOD wording avoids the apostrophe regression"
 }
 
+test_secondmate_charter_includes_bounded_supervision() {
+  local home id brief
+  home="$TMP_ROOT/secondmate-home"
+  mkdir -p "$home/data"
+  id="brief-secondmate-c1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" --secondmate alpha >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "secondmate charter was not scaffolded"
+  assert_grep "# Bounded supervision" "$brief" "secondmate charter missing bounded-supervision section"
+  assert_grep "within two minutes" "$brief" "secondmate charter missing bounded re-check"
+  assert_grep "in-pane answer" "$brief" "secondmate charter missing answer-consumption contract"
+  assert_grep "fresh bin/fm-crew-state.sh" "$brief" "secondmate charter permits stale running claims"
+  pass "fm-brief.sh: secondmate charter renders the bounded supervision contract"
+}
+
 test_script_parses
 test_ship_modes_generate_clean_briefs
 test_no_mistakes_dod_wording
+test_secondmate_charter_includes_bounded_supervision

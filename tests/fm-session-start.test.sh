@@ -80,6 +80,15 @@ SH
   printf '%s\n' manual > "${fakebin%/*}/home-placeholder" 2>/dev/null || true
 }
 
+make_fake_incompatible_tasks_axi() {
+  local fakebin=$1
+  cat > "$fakebin/tasks-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' '0.1.0'
+SH
+  chmod +x "$fakebin/tasks-axi"
+}
+
 # make_fake_ps_claude <fakebin>: harness_pid()/holder_alive() (fm-lock.sh) walk
 # `ps` output looking for a harness command name; this fake reports EVERY
 # queried pid as a live `claude` harness, so the very first ancestry check
@@ -256,8 +265,7 @@ $rec
 EOF
   make_fake_toolchain "$fakebin"
   make_fake_ps_claude "$fakebin"
-  # Force a MISSING diagnostic line so the bootstrap section is non-trivial.
-  rm -f "$fakebin/node"
+  make_fake_incompatible_tasks_axi "$fakebin"
 
   printf 'window=fm-sess:w1\nkind=ship\n' > "$home/state/task-a.meta"
 
@@ -280,7 +288,7 @@ EOF
   [ "$context_line" -lt "$fleet_line" ] || fail "CONTEXT did not precede FLEET STATE"
   [ "$fleet_line" -lt "$next_line" ] || fail "FLEET STATE did not precede NEXT STEP"
 
-  missing_line=$(printf '%s\n' "$out" | grep -n 'MISSING: node' | head -1 | cut -d: -f1)
+  missing_line=$(printf '%s\n' "$out" | grep -n 'MISSING: tasks-axi' | head -1 | cut -d: -f1)
   [ -n "$missing_line" ] || fail "MISSING diagnostic did not appear at all"
   [ "$missing_line" -lt "$fleet_line" ] || fail "actionable MISSING diagnostic was buried after the bulk fleet-state digest"
 
@@ -400,8 +408,7 @@ $rec
 EOF
   make_fake_toolchain "$fakebin"
   make_fake_ps_claude "$fakebin"
-  rm -f "$fakebin/node"
-
+  make_fake_incompatible_tasks_axi "$fakebin"
   append_wake "$home/state" signal task-z "needs-decision: pick a library"
 
   out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
@@ -409,7 +416,7 @@ EOF
   # fm-lock.sh's own exact success text.
   assert_contains "$out" "lock acquired: harness pid" "fm-lock.sh's real output did not appear (composition, not reimplementation)"
   # fm-bootstrap.sh's own exact MISSING-tool line format.
-  assert_contains "$out" "MISSING: node (install:" "fm-bootstrap.sh's real detect line did not appear verbatim"
+  assert_contains "$out" "MISSING: tasks-axi (install:" "fm-bootstrap.sh's real detect line did not appear verbatim"
   # fm-wake-drain.sh's real drained record (raw tab-separated queue line).
   assert_contains "$out" "$(printf 'signal\ttask-z\tneeds-decision: pick a library')" "fm-wake-drain.sh's real drained record did not appear"
 

@@ -20,6 +20,11 @@
 #                          terminal (captain-relevant) or non-terminal (no verb),
 #                          both surfaced at once. A provably-working stale past the
 #                          wedge threshold also surfaces. Unless afk is active.
+#   parked: <task>         a branch-matched no-mistakes run is awaiting_agent;
+#                          always actionable, independent of pane activity.
+#   possible-wedge: <task> provisional run-list evidence exceeded its bounded
+#                          wait without authoritative run-step confirmation.
+#   supervision: ...      one parked-scan batch contained both kinds above.
 #   check: <script>: <out> per-task check output, always actionable
 #   heartbeat              fleet-scan backstop found an unsurfaced captain-relevant
 #                          status, unless afk is active
@@ -103,6 +108,15 @@ HEARTBEAT=${FM_HEARTBEAT:-600}        # base seconds between heartbeat scans
 HEARTBEAT_MAX=${FM_HEARTBEAT_MAX:-7200}  # heartbeat backoff cap
 CHECK_INTERVAL=${FM_CHECK_INTERVAL:-300}  # seconds between *.check.sh sweeps
 CHECK_TIMEOUT=${FM_CHECK_TIMEOUT:-30}     # seconds allowed per *.check.sh
+PARKED_SCAN_INTERVAL=${FM_PARKED_SCAN_INTERVAL:-60}  # seconds between direct no-mistakes gate scans
+case "$PARKED_SCAN_INTERVAL" in ''|*[!0-9]*) PARKED_SCAN_INTERVAL=60 ;; esac
+CREW_STATE_NM_TIMEOUT=${FM_CREW_STATE_NM_TIMEOUT:-10}
+case "$CREW_STATE_NM_TIMEOUT" in ''|*[!0-9]*) CREW_STATE_NM_TIMEOUT=10 ;; esac
+CREW_STATE_FALLBACK_OVERHEAD=10
+PARKED_SCAN_TIMEOUT_DEFAULT=$((3 * CREW_STATE_NM_TIMEOUT + CREW_STATE_FALLBACK_OVERHEAD))
+PARKED_SCAN_TIMEOUT=${FM_PARKED_SCAN_TIMEOUT:-$PARKED_SCAN_TIMEOUT_DEFAULT}  # seconds allowed for each complete crew-state read
+case "$PARKED_SCAN_TIMEOUT" in ''|*[!0-9]*|0) PARKED_SCAN_TIMEOUT=$PARKED_SCAN_TIMEOUT_DEFAULT ;; esac
+PARKED_SCAN_CONCURRENCY=4
 SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trailing
                                       # signals (a status write, then the same turn's
                                       # turn-end hook) coalesce into one wake
@@ -264,6 +278,126 @@ wedge_timer_check() {  # <window> <since-file> <triage-label>
   esac
 }
 
+# Print one "<task>\t<state line>" row for each newly observed branch-matched
+# no-mistakes run parked at an awaiting_agent gate in the next fleet batch.
+# This runs independently of pane hashes because a gate may leave a pane looking
+# busy or unchanged forever.
+# A sentinel suppresses repeat wakes for the same parked run. It is cleared only
+# when a later authoritative run-step read proves that the run moved on; an
+# unreadable transient must not turn into alert spam.
+bounded_crew_state() {  # <task>
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$PARKED_SCAN_TIMEOUT" "$FM_CREW_STATE_BIN" "$1"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$PARKED_SCAN_TIMEOUT" "$FM_CREW_STATE_BIN" "$1"
+  elif command -v perl >/dev/null 2>&1; then
+    perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$PARKED_SCAN_TIMEOUT" "$FM_CREW_STATE_BIN" "$1"
+  fi
+}
+
+newly_parked_runs() {
+  local meta id kind line marker identity previous run_id branch gate occurrence marker_age provisional_since provisional_age scan_dir cursor count start end i
+  local -a ids pids
+  scan_dir="$STATE/.parked-scan-$$"
+  rm -rf "$scan_dir"
+  mkdir -p "$scan_dir" || return 0
+  count=0
+  for meta in "$STATE"/*.meta; do
+    [ -e "$meta" ] || continue
+    kind=$(grep '^kind=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+    [ -n "$kind" ] || kind=ship
+    [ "$kind" = ship ] || continue
+    id=$(basename "$meta"); id=${id%.meta}
+    ids[count]=$id
+    count=$((count + 1))
+  done
+
+  cursor=$(cat "$STATE/.parked-scan-cursor" 2>/dev/null || true)
+  start=0
+  if [ -n "$cursor" ]; then
+    for i in "${!ids[@]}"; do
+      if [ "${ids[$i]}" = "$cursor" ]; then
+        start=$((i + 1))
+        break
+      fi
+    done
+  fi
+  end=$((start + PARKED_SCAN_CONCURRENCY))
+  [ "$end" -le "$count" ] || end=$count
+
+  i=$start
+  while [ "$i" -lt "$end" ]; do
+    id=${ids[$i]}
+    (bounded_crew_state "$id" > "$scan_dir/$i" 2>/dev/null || true) &
+    pids[$i]=$!
+    i=$((i + 1))
+  done
+  i=$start
+  while [ "$i" -lt "$end" ]; do
+    wait "${pids[$i]}" 2>/dev/null || true
+    i=$((i + 1))
+  done
+
+  i=$start
+  while [ "$i" -lt "$end" ]; do
+    id=${ids[$i]}
+    line=$(cat "$scan_dir/$i" 2>/dev/null || true)
+    marker="$STATE/.parked-$id"
+    provisional_since="$STATE/.parked-provisional-since-$id"
+    case "$line" in
+      "state: parked "*"source: run-step"*)
+        rm -f "$provisional_since"
+        case "$line" in
+          *"run-id: "*" · branch: "*" · gate: "*" · gate-occurrence: "*" · "*)
+            run_id=${line#*run-id: }; run_id=${run_id%% ·*}
+            branch=${line#* · branch: }; branch=${branch%% ·*}
+            gate=${line#* · gate: }; gate=${gate%% ·*}
+            occurrence=${line#* · gate-occurrence: }; occurrence=${occurrence%% ·*}
+            previous=$(cat "$marker" 2>/dev/null || true)
+            marker_age=$(age_of "$marker")
+            if [ "$occurrence" = unknown ]; then
+              identity="branch: $branch · gate-occurrence: unknown"
+              case "$previous" in
+                *" · branch: $branch · gate: "*|"run-id: "*" · gate: "*" · gate-occurrence: "*) identity=$previous ;;
+              esac
+            else
+              identity="run-id: $run_id · branch: $branch · gate: $gate · gate-occurrence: $occurrence"
+              if [ "$previous" = "branch: $branch · gate-occurrence: unknown" ] && [ "$marker_age" -lt "$STALE_ESCALATE_SECS" ]; then
+                identity=$previous
+              fi
+            fi
+            if [ "$previous" != "$identity" ] || { [ "$occurrence" = unknown ] && [ "$marker_age" -ge "$STALE_ESCALATE_SECS" ]; }; then
+              printf '%s\t%s\t%s\n' "$id" "$identity" "$line"
+            fi
+            ;;
+        esac
+        ;;
+      "state: working "*"source: run-list"*)
+        provisional_age=$(age_of "$provisional_since")
+        if [ "$provisional_age" -ge "$STALE_ESCALATE_SECS" ]; then
+          if [ -e "$provisional_since" ]; then
+            printf '%s\t%s\t%s\n' "$id" provisional "state: possible-wedge · source: run-list · ${line#* · } · provisional for ${provisional_age}s"
+          else
+            touch "$provisional_since"
+          fi
+        fi
+        ;;
+      "state: "*"source: run-step"*)
+        rm -f "$marker"
+        rm -f "$provisional_since"
+        ;;
+    esac
+    i=$((i + 1))
+  done
+  if [ "$end" -lt "$count" ]; then
+    printf '%s\n' "${ids[$((end - 1))]}" > "$STATE/.parked-scan-cursor"
+  else
+    rm -f "$STATE/.parked-scan-cursor"
+    touch "$STATE/.last-parked-scan"
+  fi
+  rm -rf "$scan_dir"
+}
+
 # Check and heartbeat cadence must survive actionable exits and restarts: the
 # watcher may be relaunched before in-memory counters reach their threshold on a
 # busy fleet. Persist the schedule as file mtimes instead.
@@ -393,6 +527,48 @@ while :; do
       fi
     done
     touch "$STATE/.last-check"
+  fi
+
+  # A parked run is an agent-action gate, not a healthy long-running validation.
+  # Check it directly on a bounded cadence so its supervisor wakes even if the
+  # crew pane never becomes stale or reports a new status line.
+  if [ "$(age_of "$STATE/.last-parked-scan")" -ge "$PARKED_SCAN_INTERVAL" ]; then
+    parked=$(newly_parked_runs)
+    if [ -n "$parked" ]; then
+      parked_reason=""
+      wedge_reason=""
+      while IFS=$(printf '\t') read -r id identity line; do
+        [ -n "$id" ] || continue
+        if [ "$identity" = provisional ]; then
+          reason="possible-wedge: $id ($line)"
+          fm_wake_append possible-wedge "$id" "$reason" || exit 1
+          touch "$STATE/.parked-provisional-since-$id"
+          if [ -n "$wedge_reason" ]; then
+            wedge_reason="$wedge_reason; ${reason#possible-wedge: }"
+          else
+            wedge_reason=$reason
+          fi
+        else
+          reason="parked: $id (awaiting_agent observed · ${line#state: parked · })"
+          fm_wake_append parked "$id" "$reason" || exit 1
+          printf '%s\n' "$identity" > "$STATE/.parked-$id"
+          if [ -n "$parked_reason" ]; then
+            parked_reason="$parked_reason; ${reason#parked: }"
+          else
+            parked_reason=$reason
+          fi
+        fi
+      done <<EOF
+$parked
+EOF
+      if [ -n "$parked_reason" ] && [ -n "$wedge_reason" ]; then
+        wake "supervision: $parked_reason; $wedge_reason"
+      elif [ -n "$parked_reason" ]; then
+        wake "$parked_reason"
+      else
+        wake "$wedge_reason"
+      fi
+    fi
   fi
 
   # On the first changed signal, linger one grace period and re-scan before

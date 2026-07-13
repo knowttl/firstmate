@@ -55,6 +55,8 @@ The `config/backend` file is not inherited by secondmate homes.
 The review tool is what the first mate reaches for to turn a complex decision or a structured report into a rich, annotatable surface instead of plain chat.
 It defaults to `lavish-axi` and is overridable per home by putting a single tool name on the first non-empty line of local, gitignored `config/review-tool`.
 An absent or blank file keeps the default `lavish-axi`, so existing behavior is unchanged.
+The name may contain letters, digits, dots, underscores, and dashes, but cannot start with a dot or dash.
+When that command is installed, bootstrap verifies that its help advertises the required `setup hooks` interface; an incompatible command makes the file invalid and falls back to `lavish-axi`.
 Bootstrap's toolchain check resolves this name and, when the tool is missing, lists it with its `npm install -g <name> && <name> setup hooks` command exactly as it does for the other required tools; an override such as `atelier-axi` installs through that same path with no special-casing.
 Unlike `config/backend`, `config/review-tool` is inherited by secondmate homes (like `config/crew-harness` and `config/backlog-backend`), so setting it once at the primary applies fleetwide and re-converges every live home on each bootstrap sweep or `bin/fm-config-push.sh`; switch the whole fleet back by changing (or removing) that single primary file.
 Note this file only drives the bootstrap toolchain check - which tool firstmate is told to install and to prefer; the tool an agent actually reaches for is ultimately governed by which review-tool CLI is installed and has registered its harness session hooks.
@@ -247,6 +249,8 @@ FM_HEARTBEAT=600        # base seconds between heartbeat scans; no-change heartb
 FM_HEARTBEAT_MAX=7200   # heartbeat backoff cap
 FM_CHECK_INTERVAL=300   # seconds between slow checks (merge polls or the X-mode poll shim)
 FM_CHECK_TIMEOUT=30     # seconds allowed per slow check script
+FM_PARKED_SCAN_INTERVAL=60   # seconds between direct branch-matched no-mistakes gate scans
+FM_PARKED_SCAN_TIMEOUT=30    # deadline in seconds for each complete crew-state read
 FM_CREW_STATE_NM_TIMEOUT=10   # seconds allowed per no-mistakes query inside fm-crew-state.sh
 FM_CREW_STATE_RUNS_LIMIT=200  # recent no-mistakes runs rows scanned when cross-branch attribution falls back from axi status
 FM_CREW_STATE_BIN=bin/fm-crew-state.sh   # test override for the current-state reader used by provably-working watcher triage

@@ -152,6 +152,8 @@ test_crew_is_provably_working_classifier() {
   export FM_FAKE_CREW_STATE
   FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
   crew_is_provably_working a || fail "active run-step not treated as provably working"
+  FM_FAKE_CREW_STATE='state: working · source: run-list · validating (background run)'
+  crew_is_provably_working a || fail "provisional run-list status not treated as working"
   FM_FAKE_CREW_STATE='state: working · source: pane · harness busy'
   crew_is_provably_working a || fail "busy pane not treated as provably working"
   FM_FAKE_CREW_STATE='state: working · source: status-log · working: compiling'
@@ -167,7 +169,7 @@ test_crew_is_provably_working_classifier() {
   FM_FAKE_CREW_STATE='state: working · source: run-step · x'
   ! crew_is_provably_working "" || fail "empty id treated as provably working"
   unset FM_FAKE_CREW_STATE
-  pass "crew_is_provably_working: only working+run-step/pane is provable; idle/finished/parked/failed/unknown surface"
+  pass "crew_is_provably_working: active run or pane evidence absorbs; idle/finished/parked/failed/unknown surface"
 }
 
 # signal_crew_provably_working: a no-verb "signal:" wake is benign ONLY when EVERY
@@ -275,6 +277,382 @@ test_working_note_not_working_surfaced() {
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$status_file" >/dev/null || fail "surfaced working: note was not queued"
   [ -s "$state/.seen-task_status" ] || fail "surfaced working: note did not advance its .seen-* suppressor"
   pass "a no-verb working: note whose crew is idle with no running pipeline is surfaced"
+}
+
+# --- parked run scan: a gate wakes independently of any pane transition -------
+
+test_parked_run_surfaced_without_pane_staleness() {
+  local dir state fakebin out drain_out pid
+  dir=$(make_case parked-run); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  fm_write_meta "$state/task.meta" "window=test:fm-task" "kind=ship"
+  touch "$state/.parked-provisional-since-task"
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · run-id: 01RUN · branch: fm/task · gate: review · gate-occurrence: 1000 · parked 1h44m at review: 2 finding(s)'
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not wake for a parked run without waiting for pane staleness"
+  grep -F "parked: task (awaiting_agent observed" "$out" >/dev/null || fail "watcher did not print the observed parked-run wake"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the parked run failed"
+  grep "$(printf '\tparked\t')" "$drain_out" | grep -F "parked 1h44m" >/dev/null \
+    || fail "parked run was not queued with its duration"
+  [ -e "$state/.parked-task" ] || fail "parked run did not record its repeat-wake suppressor"
+  [ ! -e "$state/.parked-provisional-since-task" ] || fail "authoritative parked result did not clear the provisional timer"
+  unset FM_FAKE_CREW_STATE
+  pass "a branch-matched parked run wakes immediately with duration, independent of pane staleness"
+}
+
+test_consecutive_parked_gates_are_surfaced() {
+  local dir state fakebin out pid
+  dir=$(make_case consecutive-parked); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  fm_write_meta "$state/task.meta" "window=test:fm-task" "kind=ship"
+  printf '%s\n' 'run-id: 01RUN · branch: fm/task · gate: review · gate-occurrence: 1000' > "$state/.parked-task"
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · run-id: 01RUN · branch: fm/task · gate: test · gate-occurrence: 2000 · parked 1m at test'
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher suppressed a new gate in the same run"
+  grep -F "gate: test" "$out" >/dev/null || fail "watcher did not surface the new gate identity"
+  [ "$(cat "$state/.parked-task")" = 'run-id: 01RUN · branch: fm/task · gate: test · gate-occurrence: 2000' ] || fail "parked marker did not advance to the new gate identity"
+  unset FM_FAKE_CREW_STATE
+  pass "a new gate in the same run is not suppressed by the previous parked marker"
+}
+
+test_same_gate_reentry_is_surfaced() {
+  local dir state fakebin out pid
+  dir=$(make_case same-gate-reentry); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  fm_write_meta "$state/task.meta" "window=test:fm-task" "kind=ship"
+  printf '%s\n' 'run-id: 01RUN · branch: fm/task · gate: review · gate-occurrence: 1000' > "$state/.parked-task"
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · run-id: 01RUN · branch: fm/task · gate: review · gate-occurrence: 2000 · parked 1m at review'
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher suppressed a repeated gate occurrence"
+  grep -F "gate-occurrence: 2000" "$out" >/dev/null || fail "watcher did not surface the new gate occurrence"
+  unset FM_FAKE_CREW_STATE
+  pass "same-named gate re-entry is not suppressed"
+}
+
+test_unknown_gate_occurrence_uses_bounded_fallback() {
+  local dir state fakebin out drain_out pid
+  dir=$(make_case unknown-gate-occurrence); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  fm_write_meta "$state/task.meta" "kind=ship"
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · run-id: 01RUN · branch: fm/task · gate: review · gate-occurrence: unknown · parked 1m at review'
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not initially surface an identity-less gate"
+  [ "$(cat "$state/.parked-task")" = 'branch: fm/task · gate-occurrence: unknown' ] || fail "watcher did not persist the task-and-branch fallback identity"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after identity-less gate failed"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  wait_live "$pid" 30 || fail "watcher repeatedly surfaced a recent identity-less gate"
+  reap "$pid"
+  [ ! -s "$state/.wake-queue" ] || fail "recent identity-less gate was queued again"
+  touch -d '10 minutes ago' "$state/.parked-task" 2>/dev/null || touch -t 202001010000 "$state/.parked-task"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not re-escalate an identity-less gate"
+  grep -F "gate-occurrence: unknown" "$out" >/dev/null || fail "watcher omitted the re-escalated identity-less gate"
+  [ "$(cat "$state/.parked-task")" = 'branch: fm/task · gate-occurrence: unknown' ] || fail "watcher did not retain the fallback identity"
+  unset FM_FAKE_CREW_STATE
+  pass "identity-less gates suppress repeat scans and re-escalate on the wedge cadence"
+}
+
+test_unknown_gate_occurrence_preserves_detailed_identity() {
+  local dir state fakebin out pid identity
+  dir=$(make_case unknown-gate-occurrence-flap); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  fm_write_meta "$state/task.meta" "kind=ship"
+  identity='run-id: 01RUN · branch: fm/task · gate: review · gate-occurrence: 1000'
+  printf '%s\n' "$identity" > "$state/.parked-task"
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · run-id: 01RUN · branch: fm/task · gate: review · gate-occurrence: unknown · parked 1m at review'
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  wait_live "$pid" 30 || fail "watcher resurfaced a detailed gate when identity enrichment failed"
+  reap "$pid"
+  [ "$(cat "$state/.parked-task")" = "$identity" ] || fail "identity fallback replaced the detailed parked marker"
+  [ ! -s "$state/.wake-queue" ] || fail "identity enrichment failure queued a duplicate parked wake"
+  touch -d '10 minutes ago' "$state/.parked-task" 2>/dev/null || touch -t 202001010000 "$state/.parked-task"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not re-escalate a detailed gate during prolonged enrichment failure"
+  [ "$(cat "$state/.parked-task")" = "$identity" ] || fail "bounded re-escalation replaced the detailed parked marker"
+  unset FM_FAKE_CREW_STATE
+  pass "identity enrichment flapping preserves detailed markers and bounded re-escalation"
+}
+
+test_fallback_identity_enrichment_stays_bounded() {
+  local dir state fakebin out pid identity
+  dir=$(make_case fallback-identity-enrichment); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  fm_write_meta "$state/task.meta" "kind=ship"
+  printf '%s\n' 'branch: fm/task · gate-occurrence: unknown' > "$state/.parked-task"
+  identity='run-id: 01RUN · branch: fm/task · gate: review · gate-occurrence: 1000'
+  export FM_FAKE_CREW_STATE="state: parked · source: run-step · $identity · parked 1m at review"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  wait_live "$pid" 30 || fail "watcher resurfaced a fallback gate when identity enrichment recovered"
+  reap "$pid"
+  [ "$(cat "$state/.parked-task")" = 'branch: fm/task · gate-occurrence: unknown' ] || fail "fresh enrichment replaced the fallback parked marker"
+  [ ! -s "$state/.wake-queue" ] || fail "identity enrichment recovery queued a duplicate parked wake"
+  touch -d '10 minutes ago' "$state/.parked-task" 2>/dev/null || touch -t 202001010000 "$state/.parked-task"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not re-escalate an enriched fallback gate"
+  [ "$(cat "$state/.parked-task")" = "$identity" ] || fail "expired fallback marker did not upgrade to the detailed identity"
+  unset FM_FAKE_CREW_STATE
+  pass "fallback identity enrichment stays suppressed until bounded re-escalation"
+}
+
+test_provisional_run_list_preserves_parked_marker() {
+  local dir state fakebin out pid
+  dir=$(make_case provisional-run-list); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  fm_write_meta "$state/task.meta" "kind=ship"
+  printf '%s\n' 'branch: fm/task · gate-occurrence: unknown' > "$state/.parked-task"
+  export FM_FAKE_CREW_STATE='state: working · source: run-list · validating (background run)'
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  wait_live "$pid" 30 || fail "watcher surfaced a provisional cross-branch running row"
+  reap "$pid"
+  [ -e "$state/.parked-task" ] || fail "provisional run-list evidence cleared an authoritative parked marker"
+  [ ! -s "$state/.wake-queue" ] || fail "provisional run-list evidence queued a false wake"
+  unset FM_FAKE_CREW_STATE
+  pass "provisional cross-branch activity absorbs without clearing parked identity"
+}
+
+test_provisional_run_list_is_bounded_then_escalated() {
+  local dir state fakebin out pid
+  dir=$(make_case provisional-run-list-escalation); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  fm_write_meta "$state/task.meta" "kind=ship"
+  export FM_FAKE_CREW_STATE='state: working · source: run-list · validating (background run)'
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  wait_live "$pid" 30 || fail "watcher surfaced fresh provisional run-list evidence"
+  reap "$pid"
+  [ -e "$state/.parked-provisional-since-task" ] || fail "provisional run-list evidence did not start an escalation timer"
+  [ ! -s "$state/.wake-queue" ] || fail "fresh provisional run-list evidence queued a false wake"
+
+  touch -d '10 minutes ago' "$state/.parked-provisional-since-task" 2>/dev/null \
+    || touch -t 202001010000 "$state/.parked-provisional-since-task"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not escalate stale provisional run-list evidence"
+  grep -F "source: run-list" "$out" >/dev/null || fail "provisional escalation omitted its evidence source"
+  grep -F "possible-wedge: task (state: possible-wedge" "$out" >/dev/null \
+    || fail "provisional escalation was not classified as a possible wedge"
+  ! grep -F "awaiting_agent" "$out" >/dev/null || fail "provisional escalation was mislabeled as an observed gate"
+  unset FM_FAKE_CREW_STATE
+  pass "provisional run-list evidence starts a timer and wedge-escalates when it expires"
+}
+
+test_multiple_parked_runs_emit_one_afk_wake() {
+  local dir state fakebin out drain_out pid
+  dir=$(make_case multiple-parked); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  fm_write_meta "$state/alpha.meta" "window=test:fm-alpha" "kind=ship"
+  fm_write_meta "$state/bravo.meta" "window=test:fm-bravo" "kind=ship"
+  touch "$state/.afk"
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · run-id: 01RUN · branch: fm/task · gate: review · gate-occurrence: 1000 · parked 1m at review'
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not wake for multiple parked runs in away mode"
+  [ "$(wc -l < "$out" | tr -d '[:space:]')" = 1 ] || fail "multiple parked runs did not emit one combined wake"
+  grep -F "parked: alpha (awaiting_agent observed" "$out" >/dev/null || fail "combined wake omitted alpha"
+  grep -F "; bravo (awaiting_agent observed" "$out" >/dev/null || fail "combined wake omitted bravo or changed deterministic order"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after multiple parked runs failed"
+  [ "$(grep -c "$(printf '\tparked\t')" "$drain_out")" = 2 ] || fail "multiple parked runs did not retain individual durable wakes"
+  if [ ! -e "$state/.parked-alpha" ] || [ ! -e "$state/.parked-bravo" ]; then
+    fail "multiple parked runs did not record each repeat-wake suppressor"
+  fi
+  unset FM_FAKE_CREW_STATE
+  pass "multiple parked runs emit one deterministic away-mode wake and retain durable records"
+}
+
+test_mixed_parked_scan_preserves_evidence_classes() {
+  local dir state fakebin out drain_out pid
+  dir=$(make_case mixed-parked-scan); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  fm_write_meta "$state/alpha.meta" "kind=ship"
+  fm_write_meta "$state/bravo.meta" "kind=ship"
+  touch "$state/.parked-provisional-since-bravo"
+  touch -d '10 minutes ago' "$state/.parked-provisional-since-bravo" 2>/dev/null \
+    || touch -t 202001010000 "$state/.parked-provisional-since-bravo"
+  cat > "$fakebin/fm-crew-state.sh" <<'SH'
+#!/usr/bin/env bash
+case "$1" in
+  alpha) printf '%s\n' 'state: parked · source: run-step · run-id: 01RUN · branch: fm/alpha · gate: review · gate-occurrence: 1000 · parked 1m at review' ;;
+  bravo) printf '%s\n' 'state: working · source: run-list · validating (background run)' ;;
+esac
+SH
+  chmod +x "$fakebin/fm-crew-state.sh"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not surface a mixed parked-scan batch"
+  grep -F "supervision: parked: alpha (awaiting_agent observed" "$out" >/dev/null \
+    || fail "mixed batch omitted the observed parked gate"
+  grep -F "possible-wedge: bravo (state: possible-wedge · source: run-list" "$out" >/dev/null \
+    || fail "mixed batch omitted the provisional possible wedge"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after mixed parked scan failed"
+  grep "$(printf '\tparked\t')" "$drain_out" | grep -F "awaiting_agent observed" >/dev/null \
+    || fail "mixed batch did not queue the observed gate as parked"
+  grep "$(printf '\tpossible-wedge\t')" "$drain_out" | grep -F "state: possible-wedge" >/dev/null \
+    || fail "mixed batch did not queue provisional evidence as a possible wedge"
+  pass "mixed parked scans preserve observed and provisional evidence classes"
+}
+
+test_parked_scan_bounds_each_complete_read() {
+  local dir state fakebin out pid started elapsed id
+  dir=$(make_case bounded-parked-scan); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  for id in a b c; do
+    fm_write_meta "$state/$id.meta" "window=test:fm-$id" "kind=ship"
+  done
+  cat > "$fakebin/fm-crew-state.sh" <<'SH'
+#!/usr/bin/env bash
+sleep 5
+printf '%s\n' 'state: unknown · source: none · delayed fake'
+SH
+  chmod +x "$fakebin/fm-crew-state.sh"
+  started=$(date +%s)
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_PARKED_SCAN_TIMEOUT=1 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  while [ ! -e "$state/.last-parked-scan" ] && kill -0 "$pid" 2>/dev/null; do
+    sleep 0.1
+  done
+  elapsed=$(($(date +%s) - started))
+  reap "$pid"
+  [ -e "$state/.last-parked-scan" ] || fail "bounded parked scan did not finish"
+  [ "$elapsed" -lt 4 ] || fail "parked scan exceeded its complete-read deadline (${elapsed}s)"
+  pass "each parked-run crew-state read has a complete-read deadline"
+}
+
+test_parked_scan_timeout_tracks_reader_budget() {
+  local dir state fakebin out timeout_arg pid
+  dir=$(make_case parked-scan-reader-budget); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; timeout_arg="$dir/timeout-arg"
+  fm_write_meta "$state/task.meta" "kind=ship"
+  cat > "$fakebin/timeout" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$1" > "$FM_FAKE_TIMEOUT_ARG"
+shift
+exec "$@"
+SH
+  chmod +x "$fakebin/timeout"
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · run-id: 01RUN · branch: fm/task · gate: review · gate-occurrence: 1000 · parked 1m at review'
+  PATH="$fakebin:$PATH" FM_FAKE_TIMEOUT_ARG="$timeout_arg" FM_STATE_OVERRIDE="$state" \
+    FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_CREW_STATE_NM_TIMEOUT=20 \
+    FM_PARKED_SCAN_INTERVAL=0 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not finish the parked scan budget check"
+  [ "$(cat "$timeout_arg")" = 70 ] || fail "parked-scan deadline did not track the reader's inner deadlines"
+  unset FM_FAKE_CREW_STATE
+  pass "parked-scan deadline tracks the complete reader budget"
+}
+
+test_parked_scan_bounds_reader_concurrency() {
+  local dir state fakebin out pid started elapsed id
+  dir=$(make_case parked-scan-concurrency); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  for id in a b c d e f g h; do
+    fm_write_meta "$state/$id.meta" "window=test:fm-$id" "kind=ship"
+  done
+  cat > "$fakebin/fm-crew-state.sh" <<'SH'
+#!/usr/bin/env bash
+sleep 1
+printf '%s\n' 'state: unknown · source: none · delayed fake'
+SH
+  chmod +x "$fakebin/fm-crew-state.sh"
+  started=$(date +%s)
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_PARKED_SCAN_TIMEOUT=3 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  while [ ! -e "$state/.last-parked-scan" ] && kill -0 "$pid" 2>/dev/null; do
+    sleep 0.1
+  done
+  elapsed=$(($(date +%s) - started))
+  reap "$pid"
+  [ -e "$state/.last-parked-scan" ] || fail "bounded-concurrency parked scan did not finish"
+  [ "$elapsed" -ge 2 ] || fail "parked scan launched all readers concurrently (${elapsed}s)"
+  [ "$elapsed" -lt 7 ] || fail "bounded-concurrency parked scan took unexpectedly long (${elapsed}s)"
+  pass "parked-run scans use at most four concurrent crew-state readers"
+}
+
+test_parked_scan_services_watcher_between_batches() {
+  local dir state fakebin out pid i cursor beat_before beat_after
+  dir=$(make_case parked-scan-yields); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  for i in a b c d e f g h; do
+    fm_write_meta "$state/$i.meta" "window=test:fm-$i" "kind=ship"
+  done
+  cat > "$fakebin/fm-crew-state.sh" <<'SH'
+#!/usr/bin/env bash
+case "$1" in
+  a|b|c|d) sleep 1 ;;
+  *) sleep 5 ;;
+esac
+printf '%s\n' 'state: unknown · source: none · delayed fake'
+SH
+  chmod +x "$fakebin/fm-crew-state.sh"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_PARKED_SCAN_TIMEOUT=10 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  i=0
+  while [ "$i" -lt 30 ]; do
+    cursor=$(cat "$state/.parked-scan-cursor" 2>/dev/null || true)
+    [ "$cursor" = d ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ "$cursor" = d ] || { reap "$pid"; fail "parked scan did not persist its first-batch cursor"; }
+  beat_before=$(file_mtime "$state/.last-watcher-beat")
+  i=0
+  while [ "$i" -lt 30 ]; do
+    beat_after=$(file_mtime "$state/.last-watcher-beat")
+    [ "$beat_after" -gt "$beat_before" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  reap "$pid"
+  [ "$beat_after" -gt "$beat_before" ] || fail "watcher did not resume supervision between parked-scan batches"
+  [ ! -e "$state/.last-parked-scan" ] || fail "fleet scan completed before the delayed second batch"
+  pass "parked-run scans resume watcher duties between bounded fleet batches"
 }
 
 # --- actionable wakes are surfaced (queue + exit) ---------------------------
@@ -398,7 +776,7 @@ test_nonterminal_stale_provably_working_absorbed_then_escalated() {
   printf '%s' "$pane_hash" > "$state/.hash-$key"
   printf '1\n' > "$state/.count-$key"
   # The crew's pipeline is actively running: a static pane is normal (waiting on CI).
-  export FM_FAKE_CREW_STATE='state: working · source: run-step · ci running'
+  export FM_FAKE_CREW_STATE='state: working · source: run-list · validating (background run)'
 
   # Phase A: a high escalation threshold means the first sighting is absorbed.
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
@@ -653,6 +1031,20 @@ test_provably_working_signal_absorbed
 test_turn_ended_provably_working_absorbed
 test_turn_ended_not_working_surfaced
 test_working_note_not_working_surfaced
+test_parked_run_surfaced_without_pane_staleness
+test_consecutive_parked_gates_are_surfaced
+test_unknown_gate_occurrence_uses_bounded_fallback
+test_unknown_gate_occurrence_preserves_detailed_identity
+test_fallback_identity_enrichment_stays_bounded
+test_provisional_run_list_preserves_parked_marker
+test_provisional_run_list_is_bounded_then_escalated
+test_same_gate_reentry_is_surfaced
+test_multiple_parked_runs_emit_one_afk_wake
+test_mixed_parked_scan_preserves_evidence_classes
+test_parked_scan_bounds_each_complete_read
+test_parked_scan_timeout_tracks_reader_budget
+test_parked_scan_bounds_reader_concurrency
+test_parked_scan_services_watcher_between_batches
 test_actionable_signal_surfaced
 test_terminal_stale_surfaced
 test_stale_terminal_status_overridden_by_active_run

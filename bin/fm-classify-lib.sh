@@ -99,9 +99,8 @@ signal_reason_is_actionable() {  # <file> ...
 # It reuses bin/fm-crew-state.sh rather than duplicating its run-step logic, and
 # treats the crew as provably working in exactly two cases, both read straight from
 # that helper's one canonical line ("state: <s> · source: <src> · <detail>"):
-#   (a) state working from source run-step - the crew's no-mistakes run for its
-#       branch is in an actively-running step (running/fixing/ci), NOT terminal,
-#       parked, passed, or failed; OR
+#   (a) state working from source run-step or run-list - the crew's no-mistakes
+#       run for its branch is active, with run-list remaining provisional; OR
 #   (b) state working from source pane     - the pane shows the harness busy
 #       signature.
 # Everything else - a terminal/parked/failed run, an idle pane that fell back to a
@@ -119,7 +118,7 @@ crew_is_provably_working() {  # <id>
   [ "$state" = working ] || return 1
   src=${line#*source: }; src=${src%% *}
   case "$src" in
-    run-step|pane) return 0 ;;
+    run-step|run-list|pane) return 0 ;;
     *)             return 1 ;;
   esac
 }

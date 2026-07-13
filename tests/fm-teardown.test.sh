@@ -302,6 +302,18 @@ test_teardown_prompts_tasks_axi_done_when_compatible() {
   pass "teardown prompts tasks-axi backlog refresh when compatible"
 }
 
+test_teardown_removes_parked_markers() {
+  local case_dir
+  case_dir=$(make_case parked-markers)
+  write_meta "$case_dir" no-mistakes ship
+  touch "$case_dir/state/.parked-task-x1" "$case_dir/state/.parked-provisional-since-task-x1"
+
+  run_teardown "$case_dir" >/dev/null || fail "teardown failed while removing parked markers"
+  [ ! -e "$case_dir/state/.parked-task-x1" ] || fail "teardown left the parked marker"
+  [ ! -e "$case_dir/state/.parked-provisional-since-task-x1" ] || fail "teardown left the provisional parked timer"
+  pass "teardown removes parked watcher markers"
+}
+
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present() {
   local case_dir out
   case_dir=$(make_case tasks-axi-manual-optout)
@@ -673,6 +685,7 @@ test_local_only_force_overrides_unpushed() {
 
 test_local_only_fork_remote_allows
 test_teardown_prompts_tasks_axi_done_when_compatible
+test_teardown_removes_parked_markers
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
 test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
