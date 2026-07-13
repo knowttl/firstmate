@@ -299,9 +299,9 @@ newly_parked_runs() {
     [ -n "$kind" ] || kind=ship
     [ "$kind" = ship ] || continue
     id=$(basename "$meta"); id=${id%.meta}
-    ids[$count]=$id
+    ids[count]=$id
     (bounded_crew_state "$id" > "$scan_dir/$count" 2>/dev/null || true) &
-    pids[$count]=$!
+    pids[count]=$!
     count=$((count + 1))
   done
 
