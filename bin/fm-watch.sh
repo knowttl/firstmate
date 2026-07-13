@@ -110,8 +110,12 @@ CHECK_INTERVAL=${FM_CHECK_INTERVAL:-300}  # seconds between *.check.sh sweeps
 CHECK_TIMEOUT=${FM_CHECK_TIMEOUT:-30}     # seconds allowed per *.check.sh
 PARKED_SCAN_INTERVAL=${FM_PARKED_SCAN_INTERVAL:-60}  # seconds between direct no-mistakes gate scans
 case "$PARKED_SCAN_INTERVAL" in ''|*[!0-9]*) PARKED_SCAN_INTERVAL=60 ;; esac
-PARKED_SCAN_TIMEOUT=${FM_PARKED_SCAN_TIMEOUT:-30}  # seconds allowed for each complete crew-state read
-case "$PARKED_SCAN_TIMEOUT" in ''|*[!0-9]*|0) PARKED_SCAN_TIMEOUT=30 ;; esac
+CREW_STATE_NM_TIMEOUT=${FM_CREW_STATE_NM_TIMEOUT:-10}
+case "$CREW_STATE_NM_TIMEOUT" in ''|*[!0-9]*) CREW_STATE_NM_TIMEOUT=10 ;; esac
+CREW_STATE_FALLBACK_OVERHEAD=10
+PARKED_SCAN_TIMEOUT_DEFAULT=$((3 * CREW_STATE_NM_TIMEOUT + CREW_STATE_FALLBACK_OVERHEAD))
+PARKED_SCAN_TIMEOUT=${FM_PARKED_SCAN_TIMEOUT:-$PARKED_SCAN_TIMEOUT_DEFAULT}  # seconds allowed for each complete crew-state read
+case "$PARKED_SCAN_TIMEOUT" in ''|*[!0-9]*|0) PARKED_SCAN_TIMEOUT=$PARKED_SCAN_TIMEOUT_DEFAULT ;; esac
 PARKED_SCAN_CONCURRENCY=4
 SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trailing
                                       # signals (a status write, then the same turn's

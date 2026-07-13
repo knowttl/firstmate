@@ -504,6 +504,30 @@ SH
   pass "each parked-run crew-state read has a complete-read deadline"
 }
 
+test_parked_scan_timeout_tracks_reader_budget() {
+  local dir state fakebin out timeout_arg pid
+  dir=$(make_case parked-scan-reader-budget); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; timeout_arg="$dir/timeout-arg"
+  fm_write_meta "$state/task.meta" "kind=ship"
+  cat > "$fakebin/timeout" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$1" > "$FM_FAKE_TIMEOUT_ARG"
+shift
+exec "$@"
+SH
+  chmod +x "$fakebin/timeout"
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · run-id: 01RUN · branch: fm/task · gate: review · gate-occurrence: 1000 · parked 1m at review'
+  PATH="$fakebin:$PATH" FM_FAKE_TIMEOUT_ARG="$timeout_arg" FM_STATE_OVERRIDE="$state" \
+    FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_CREW_STATE_NM_TIMEOUT=20 \
+    FM_PARKED_SCAN_INTERVAL=0 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not finish the parked scan budget check"
+  [ "$(cat "$timeout_arg")" = 70 ] || fail "parked-scan deadline did not track the reader's inner deadlines"
+  unset FM_FAKE_CREW_STATE
+  pass "parked-scan deadline tracks the complete reader budget"
+}
+
 test_parked_scan_bounds_reader_concurrency() {
   local dir state fakebin out pid started elapsed id
   dir=$(make_case parked-scan-concurrency); state="$dir/state"; fakebin="$dir/fakebin"
@@ -960,6 +984,7 @@ test_same_gate_reentry_is_surfaced
 test_multiple_parked_runs_emit_one_afk_wake
 test_mixed_parked_scan_preserves_evidence_classes
 test_parked_scan_bounds_each_complete_read
+test_parked_scan_timeout_tracks_reader_budget
 test_parked_scan_bounds_reader_concurrency
 test_parked_scan_services_watcher_between_batches
 test_actionable_signal_surfaced

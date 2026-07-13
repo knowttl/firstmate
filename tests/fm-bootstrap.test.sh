@@ -170,8 +170,8 @@ ROWS
   pass "bootstrap enforces no-mistakes minimum version"
 }
 
-test_node_sqlite_capability() {
-  local case_dir fakebin out missing
+test_node_sqlite_capability_is_optional() {
+  local case_dir fakebin out
   case_dir="$TMP_ROOT/node-sqlite"
   mkdir -p "$case_dir/home/config"
   printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
@@ -181,11 +181,10 @@ test_node_sqlite_capability() {
 exit 1
 SH
   chmod +x "$fakebin/node"
-  missing="MISSING: node (install: brew install node  # or the platform's package manager)"
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
     FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
-  [ "$out" = "$missing" ] || fail "node without node:sqlite DatabaseSync should require an upgrade, got: $out"
-  pass "bootstrap requires node:sqlite DatabaseSync support"
+  [ -z "$out" ] || fail "optional node:sqlite capability blocked bootstrap: $out"
+  pass "bootstrap keeps node:sqlite enrichment optional"
 }
 
 test_orca_backend_gates_orca_tool_only_when_selected() {
@@ -303,7 +302,7 @@ test_incompatible_default_review_tool_is_reported() {
 
 test_bootstrap_reporting
 test_no_mistakes_min_version
-test_node_sqlite_capability
+test_node_sqlite_capability_is_optional
 test_orca_backend_gates_orca_tool_only_when_selected
 test_crew_dispatch_active_rules_are_surfaced
 test_crew_dispatch_validation

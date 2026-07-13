@@ -208,10 +208,6 @@ if [ "$REVIEW_TOOL_VALID" = 1 ] && command -v "$REVIEW_TOOL" >/dev/null 2>&1 \
   REVIEW_TOOL_VALID=0
 fi
 
-node_sqlite_compatible() {
-  node -e "const { DatabaseSync } = require('node:sqlite'); if (typeof DatabaseSync !== 'function') process.exit(1)" >/dev/null 2>&1
-}
-
 install_cmd() {
   case "$1" in
     tmux|node|gh|curl|jq|orca) echo "brew install $1  # or the platform's package manager" ;;
@@ -451,9 +447,6 @@ done
 if [ "$REVIEW_TOOL_VALID" = 0 ] && [ ! -f "$CONFIG/review-tool" ] \
   && command -v "$REVIEW_TOOL" >/dev/null 2>&1; then
   echo "MISSING: $REVIEW_TOOL (install: $(install_cmd "$REVIEW_TOOL"))"
-fi
-if command -v node >/dev/null 2>&1 && ! node_sqlite_compatible; then
-  echo "MISSING: node (install: $(install_cmd node))"
 fi
 if command -v treehouse >/dev/null 2>&1 && ! treehouse_supports_lease; then
   echo "MISSING: treehouse (install: $(install_cmd treehouse))"
