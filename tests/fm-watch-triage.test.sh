@@ -377,7 +377,7 @@ test_multiple_parked_runs_emit_one_afk_wake() {
   pass "multiple parked runs emit one deterministic away-mode wake and retain durable records"
 }
 
-test_parked_scan_has_one_fleet_deadline() {
+test_parked_scan_bounds_each_complete_read() {
   local dir state fakebin out pid started elapsed id
   dir=$(make_case bounded-parked-scan); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"
@@ -402,7 +402,36 @@ SH
   reap "$pid"
   [ -e "$state/.last-parked-scan" ] || fail "bounded parked scan did not finish"
   [ "$elapsed" -lt 4 ] || fail "parked scan exceeded its complete-read deadline (${elapsed}s)"
-  pass "the full parked-run scan has one fleet-wide deadline"
+  pass "each parked-run crew-state read has a complete-read deadline"
+}
+
+test_parked_scan_bounds_reader_concurrency() {
+  local dir state fakebin out pid started elapsed id
+  dir=$(make_case parked-scan-concurrency); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  for id in a b c d e f g h; do
+    fm_write_meta "$state/$id.meta" "window=test:fm-$id" "kind=ship"
+  done
+  cat > "$fakebin/fm-crew-state.sh" <<'SH'
+#!/usr/bin/env bash
+sleep 1
+printf '%s\n' 'state: unknown · source: none · delayed fake'
+SH
+  chmod +x "$fakebin/fm-crew-state.sh"
+  started=$(date +%s)
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_PARKED_SCAN_TIMEOUT=3 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  while [ ! -e "$state/.last-parked-scan" ] && kill -0 "$pid" 2>/dev/null; do
+    sleep 0.1
+  done
+  elapsed=$(($(date +%s) - started))
+  reap "$pid"
+  [ -e "$state/.last-parked-scan" ] || fail "bounded-concurrency parked scan did not finish"
+  [ "$elapsed" -ge 2 ] || fail "parked scan launched all readers concurrently (${elapsed}s)"
+  [ "$elapsed" -lt 5 ] || fail "bounded-concurrency parked scan took unexpectedly long (${elapsed}s)"
+  pass "parked-run scans use at most four concurrent crew-state readers"
 }
 
 # --- actionable wakes are surfaced (queue + exit) ---------------------------
@@ -786,7 +815,8 @@ test_consecutive_parked_gates_are_surfaced
 test_unknown_gate_occurrence_is_never_suppressed
 test_same_gate_reentry_is_surfaced
 test_multiple_parked_runs_emit_one_afk_wake
-test_parked_scan_has_one_fleet_deadline
+test_parked_scan_bounds_each_complete_read
+test_parked_scan_bounds_reader_concurrency
 test_actionable_signal_surfaced
 test_terminal_stale_surfaced
 test_stale_terminal_status_overridden_by_active_run

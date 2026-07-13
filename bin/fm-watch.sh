@@ -107,8 +107,9 @@ CHECK_INTERVAL=${FM_CHECK_INTERVAL:-300}  # seconds between *.check.sh sweeps
 CHECK_TIMEOUT=${FM_CHECK_TIMEOUT:-30}     # seconds allowed per *.check.sh
 PARKED_SCAN_INTERVAL=${FM_PARKED_SCAN_INTERVAL:-60}  # seconds between direct no-mistakes gate scans
 case "$PARKED_SCAN_INTERVAL" in ''|*[!0-9]*) PARKED_SCAN_INTERVAL=60 ;; esac
-PARKED_SCAN_TIMEOUT=${FM_PARKED_SCAN_TIMEOUT:-15}  # seconds allowed for each complete crew-state read
-case "$PARKED_SCAN_TIMEOUT" in ''|*[!0-9]*|0) PARKED_SCAN_TIMEOUT=15 ;; esac
+PARKED_SCAN_TIMEOUT=${FM_PARKED_SCAN_TIMEOUT:-30}  # seconds allowed for each complete crew-state read
+case "$PARKED_SCAN_TIMEOUT" in ''|*[!0-9]*|0) PARKED_SCAN_TIMEOUT=30 ;; esac
+PARKED_SCAN_CONCURRENCY=4
 SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trailing
                                       # signals (a status write, then the same turn's
                                       # turn-end hook) coalesce into one wake
@@ -287,12 +288,14 @@ bounded_crew_state() {  # <task>
 }
 
 newly_parked_runs() {
-  local meta id kind line marker identity previous run_id gate occurrence scan_dir count i
+  local meta id kind line marker identity previous run_id gate occurrence scan_dir count i batch_start active
   local -a ids pids
   scan_dir="$STATE/.parked-scan-$$"
   rm -rf "$scan_dir"
   mkdir -p "$scan_dir" || return 0
   count=0
+  batch_start=0
+  active=0
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
     kind=$(grep '^kind=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
@@ -303,10 +306,22 @@ newly_parked_runs() {
     (bounded_crew_state "$id" > "$scan_dir/$count" 2>/dev/null || true) &
     pids[count]=$!
     count=$((count + 1))
+    active=$((active + 1))
+    if [ "$active" -eq "$PARKED_SCAN_CONCURRENCY" ]; then
+      i=$batch_start
+      while [ "$i" -lt "$count" ]; do
+        wait "${pids[$i]}" 2>/dev/null || true
+        i=$((i + 1))
+      done
+      batch_start=$count
+      active=0
+    fi
   done
 
-  for i in "${!pids[@]}"; do
+  i=$batch_start
+  while [ "$i" -lt "$count" ]; do
     wait "${pids[$i]}" 2>/dev/null || true
+    i=$((i + 1))
   done
 
   for i in "${!ids[@]}"; do

@@ -72,6 +72,7 @@ case "${1:-}" in
   runs)
     printf '%s\n' "${FM_FAKE_RUNS_LIST:-}" ;;
   status)
+    sleep "${FM_FAKE_STATUS_DELAY:-0}"
     printf '    repo:  %s\n' "${FM_FAKE_REPO_PATH:-}" ;;
 esac
 exit 0
@@ -160,13 +161,14 @@ reset_fakes() {
   FM_FAKE_RUNS_LIST=""
   FM_FAKE_RUN_IDENTITY=""
   FM_FAKE_REPO_PATH=""
+  FM_FAKE_STATUS_DELAY=0
   FM_FAKE_BUSY=0
   FM_FAKE_TMUX_MISSING=0
   FM_FAKE_HERDR_BUSY=0
   FM_FAKE_HERDR_MISSING=0
   FM_FAKE_HERDR_AGENT_STATUS=""
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_TMUX_MISSING
-  export FM_FAKE_RUN_IDENTITY FM_FAKE_REPO_PATH
+  export FM_FAKE_RUN_IDENTITY FM_FAKE_REPO_PATH FM_FAKE_STATUS_DELAY
   export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS
 }
 
@@ -356,6 +358,27 @@ test_genuine_parked_not_superseded() {
   assert_contains "$out" "ask-user" "parked surfaces ask-user finding"
   assert_not_contains "$out" "superseded" "agreeing parked+needs-decision not flagged stale"
   pass "genuine parked run is not flagged superseded"
+}
+
+test_parked_state_survives_slow_identity_enrichment() {
+  reset_fakes
+  local d out started elapsed
+  d=$(new_case parked-slow-identity)
+  make_repo_on_branch "$d/wt" fm/feat-slow-identity
+  make_fakebin "$d" >/dev/null
+  mkdir -p "$d/nm"
+  : > "$d/nm/state.sqlite"
+  fm_write_meta "$d/state/feat-slow-identity.meta" "window=fm:fm-feat-slow-identity" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_parked fm/feat-slow-identity)"
+  FM_FAKE_REPO_PATH="$d/repo"
+  FM_FAKE_STATUS_DELAY=5
+  started=$(date +%s)
+  out=$(PATH="$d/fakebin:$PATH" NM_HOME="$d/nm" FM_STATE_OVERRIDE="$d/state" "$CREW_STATE" feat-slow-identity)
+  elapsed=$(($(date +%s) - started))
+  assert_contains "$out" "state: parked" "slow optional identity lookup discarded an authoritative parked state"
+  assert_contains "$out" "gate-occurrence: unknown" "timed-out identity enrichment did not degrade safely"
+  [ "$elapsed" -lt 5 ] || fail "optional identity enrichment delayed parked output for ${elapsed}s"
+  pass "parked state is emitted when optional identity enrichment times out"
 }
 
 test_scalar_gate_parked_not_superseded() {
@@ -832,6 +855,7 @@ test_active_run_is_authoritative
 test_stale_needs_decision_superseded
 test_stale_blocked_superseded
 test_genuine_parked_not_superseded
+test_parked_state_survives_slow_identity_enrichment
 test_scalar_gate_parked_not_superseded
 test_gate_block_parked_not_superseded
 test_ci_ready_done_log_beats_monitoring_run

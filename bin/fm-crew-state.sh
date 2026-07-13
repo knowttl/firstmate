@@ -55,6 +55,7 @@ META="$STATE/$ID.meta"
 LOG="$STATE/$ID.status"
 NM_TIMEOUT=${FM_CREW_STATE_NM_TIMEOUT:-10}
 case "$NM_TIMEOUT" in ''|*[!0-9]*) NM_TIMEOUT=10 ;; esac
+IDENTITY_TIMEOUT=2
 # How many of the most recent `no-mistakes runs` rows the cross-branch fallback
 # (nm_runs_status_for_branch, below) scans. Generous enough to still find a
 # branch's own run on a busy multi-crew fleet without listing the entire
@@ -202,13 +203,18 @@ if command -v timeout >/dev/null 2>&1; then HAVE_TIMEOUT=timeout
 elif command -v gtimeout >/dev/null 2>&1; then HAVE_TIMEOUT=gtimeout
 elif command -v perl >/dev/null 2>&1; then HAVE_TIMEOUT=perl
 fi
-nm_run() {  # <args...>
+nm_run_with_timeout() {  # <seconds> <args...>
+  local seconds=$1
+  shift
   case "$HAVE_TIMEOUT" in
-    timeout)  ( cd "$WT" && timeout "$NM_TIMEOUT" no-mistakes "$@" ) 2>/dev/null || true ;;
-    gtimeout) ( cd "$WT" && gtimeout "$NM_TIMEOUT" no-mistakes "$@" ) 2>/dev/null || true ;;
-    perl)     ( cd "$WT" && perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$NM_TIMEOUT" no-mistakes "$@" ) 2>/dev/null || true ;;
+    timeout)  ( cd "$WT" && timeout "$seconds" no-mistakes "$@" ) 2>/dev/null || true ;;
+    gtimeout) ( cd "$WT" && gtimeout "$seconds" no-mistakes "$@" ) 2>/dev/null || true ;;
+    perl)     ( cd "$WT" && perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$seconds" no-mistakes "$@" ) 2>/dev/null || true ;;
     *)        true ;;
   esac
+}
+nm_run() {  # <args...>
+  nm_run_with_timeout "$NM_TIMEOUT" "$@"
 }
 
 # Scalar value of a TOON key in the captured run output ($RUN_OUT).
@@ -332,14 +338,21 @@ nm_runs_status_for_branch() {  # <branch>
 
 nm_run_identity_for_branch() {  # <branch> -> <run-id>|<awaiting-agent-since>
   local branch=$1 home db repo_out repo_path
+  local -a identity_runner
   command -v node >/dev/null 2>&1 || return 0
   home=${NM_HOME:-${HOME:-}/.no-mistakes}
   db="$home/state.sqlite"
   [ -r "$db" ] || return 0
-  repo_out=$(nm_run status)
+  repo_out=$(nm_run_with_timeout "$IDENTITY_TIMEOUT" status)
   repo_path=$(printf '%s\n' "$repo_out" | sed -n 's/^[[:space:]]*repo:[[:space:]]*//p' | head -1)
   [ -n "$repo_path" ] || return 0
-  node - "$db" "$repo_path" "$branch" <<'NODE' 2>/dev/null || true
+  case "$HAVE_TIMEOUT" in
+    timeout) identity_runner=(timeout "$IDENTITY_TIMEOUT" node) ;;
+    gtimeout) identity_runner=(gtimeout "$IDENTITY_TIMEOUT" node) ;;
+    perl) identity_runner=(perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$IDENTITY_TIMEOUT" node) ;;
+    *) return 0 ;;
+  esac
+  "${identity_runner[@]}" - "$db" "$repo_path" "$branch" <<'NODE' 2>/dev/null || true
 const { DatabaseSync } = require('node:sqlite');
 const [dbPath, repoPath, branch] = process.argv.slice(2);
 const db = new DatabaseSync(dbPath, { readOnly: true });
