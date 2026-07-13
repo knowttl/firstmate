@@ -287,6 +287,20 @@ test_review_tool_override_is_validated_and_surfaced() {
   pass "bootstrap validates and surfaces the review-tool override"
 }
 
+test_incompatible_default_review_tool_is_reported() {
+  local case_dir fakebin out missing
+  case_dir="$TMP_ROOT/default-review-tool"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  fm_fake_exit0 "$fakebin" lavish-axi
+  missing="MISSING: lavish-axi (install: npm install -g lavish-axi && lavish-axi setup hooks)"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  [ "$out" = "$missing" ] || fail "incompatible default review tool was not reported: $out"
+  pass "bootstrap reports an incompatible default review tool"
+}
+
 test_bootstrap_reporting
 test_no_mistakes_min_version
 test_node_sqlite_capability
@@ -294,3 +308,4 @@ test_orca_backend_gates_orca_tool_only_when_selected
 test_crew_dispatch_active_rules_are_surfaced
 test_crew_dispatch_validation
 test_review_tool_override_is_validated_and_surfaced
+test_incompatible_default_review_tool_is_reported

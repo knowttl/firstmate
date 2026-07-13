@@ -289,7 +289,7 @@ bounded_crew_state() {  # <task>
 }
 
 newly_parked_runs() {
-  local meta id kind line marker identity previous run_id branch gate occurrence marker_age scan_dir cursor count start end i
+  local meta id kind line marker identity previous run_id branch gate occurrence marker_age provisional_since provisional_age scan_dir cursor count start end i
   local -a ids pids
   scan_dir="$STATE/.parked-scan-$$"
   rm -rf "$scan_dir"
@@ -336,6 +336,7 @@ newly_parked_runs() {
     id=${ids[$i]}
     line=$(cat "$scan_dir/$i" 2>/dev/null || true)
     marker="$STATE/.parked-$id"
+    provisional_since="$STATE/.parked-provisional-since-$id"
     case "$line" in
       "state: parked "*"source: run-step"*)
         case "$line" in
@@ -357,8 +358,19 @@ newly_parked_runs() {
             ;;
         esac
         ;;
+      "state: working "*"source: run-list"*)
+        provisional_age=$(age_of "$provisional_since")
+        if [ "$provisional_age" -ge "$STALE_ESCALATE_SECS" ]; then
+          if [ -e "$provisional_since" ]; then
+            printf '%s\t%s\t%s\n' "$id" provisional "state: parked · source: run-list · ${line#* · } · provisional for ${provisional_age}s, possible wedge"
+          else
+            touch "$provisional_since"
+          fi
+        fi
+        ;;
       "state: "*"source: run-step"*)
         rm -f "$marker"
+        rm -f "$provisional_since"
         ;;
     esac
     i=$((i + 1))
@@ -514,7 +526,11 @@ while :; do
         [ -n "$id" ] || continue
         reason="parked: $id ($line)"
         fm_wake_append parked "$id" "$reason" || exit 1
-        printf '%s\n' "$identity" > "$STATE/.parked-$id"
+        if [ "$identity" = provisional ]; then
+          touch "$STATE/.parked-provisional-since-$id"
+        else
+          printf '%s\n' "$identity" > "$STATE/.parked-$id"
+        fi
         if [ -n "$parked_reason" ]; then
           parked_reason="$parked_reason; ${reason#parked: }"
         else

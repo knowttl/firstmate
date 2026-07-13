@@ -448,6 +448,10 @@ fi
 for t in $TOOLS; do
   command -v "$t" >/dev/null || echo "MISSING: $t (install: $(install_cmd "$t"))"
 done
+if [ "$REVIEW_TOOL_VALID" = 0 ] && [ ! -f "$CONFIG/review-tool" ] \
+  && command -v "$REVIEW_TOOL" >/dev/null 2>&1; then
+  echo "MISSING: $REVIEW_TOOL (install: $(install_cmd "$REVIEW_TOOL"))"
+fi
 if command -v node >/dev/null 2>&1 && ! node_sqlite_compatible; then
   echo "MISSING: node (install: $(install_cmd node))"
 fi

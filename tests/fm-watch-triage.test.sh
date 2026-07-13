@@ -387,6 +387,34 @@ test_provisional_run_list_preserves_parked_marker() {
   pass "provisional cross-branch activity absorbs without clearing parked identity"
 }
 
+test_provisional_run_list_is_bounded_then_escalated() {
+  local dir state fakebin out pid
+  dir=$(make_case provisional-run-list-escalation); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  fm_write_meta "$state/task.meta" "kind=ship"
+  export FM_FAKE_CREW_STATE='state: working · source: run-list · validating (background run)'
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  wait_live "$pid" 30 || fail "watcher surfaced fresh provisional run-list evidence"
+  reap "$pid"
+  [ -e "$state/.parked-provisional-since-task" ] || fail "provisional run-list evidence did not start an escalation timer"
+  [ ! -s "$state/.wake-queue" ] || fail "fresh provisional run-list evidence queued a false wake"
+
+  touch -d '10 minutes ago' "$state/.parked-provisional-since-task" 2>/dev/null \
+    || touch -t 202001010000 "$state/.parked-provisional-since-task"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not escalate stale provisional run-list evidence"
+  grep -F "source: run-list" "$out" >/dev/null || fail "provisional escalation omitted its evidence source"
+  grep -F "possible wedge" "$out" >/dev/null || fail "provisional escalation was not labeled as a possible wedge"
+  unset FM_FAKE_CREW_STATE
+  pass "provisional run-list evidence starts a timer and wedge-escalates when it expires"
+}
+
 test_multiple_parked_runs_emit_one_afk_wake() {
   local dir state fakebin out drain_out pid
   dir=$(make_case multiple-parked); state="$dir/state"; fakebin="$dir/fakebin"
@@ -891,6 +919,7 @@ test_parked_run_surfaced_without_pane_staleness
 test_consecutive_parked_gates_are_surfaced
 test_unknown_gate_occurrence_uses_bounded_fallback
 test_provisional_run_list_preserves_parked_marker
+test_provisional_run_list_is_bounded_then_escalated
 test_same_gate_reentry_is_surfaced
 test_multiple_parked_runs_emit_one_afk_wake
 test_parked_scan_bounds_each_complete_read
