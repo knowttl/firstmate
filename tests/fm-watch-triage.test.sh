@@ -434,6 +434,48 @@ SH
   pass "parked-run scans use at most four concurrent crew-state readers"
 }
 
+test_parked_scan_services_watcher_between_batches() {
+  local dir state fakebin out pid i cursor beat_before beat_after
+  dir=$(make_case parked-scan-yields); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  for i in a b c d e f g h; do
+    fm_write_meta "$state/$i.meta" "window=test:fm-$i" "kind=ship"
+  done
+  cat > "$fakebin/fm-crew-state.sh" <<'SH'
+#!/usr/bin/env bash
+case "$1" in
+  a|b|c|d) sleep 1 ;;
+  *) sleep 5 ;;
+esac
+printf '%s\n' 'state: unknown · source: none · delayed fake'
+SH
+  chmod +x "$fakebin/fm-crew-state.sh"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_PARKED_SCAN_TIMEOUT=10 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  i=0
+  while [ "$i" -lt 30 ]; do
+    cursor=$(cat "$state/.parked-scan-cursor" 2>/dev/null || true)
+    [ "$cursor" = d ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ "$cursor" = d ] || { reap "$pid"; fail "parked scan did not persist its first-batch cursor"; }
+  beat_before=$(file_mtime "$state/.last-watcher-beat")
+  i=0
+  while [ "$i" -lt 30 ]; do
+    beat_after=$(file_mtime "$state/.last-watcher-beat")
+    [ "$beat_after" -gt "$beat_before" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  reap "$pid"
+  [ "$beat_after" -gt "$beat_before" ] || fail "watcher did not resume supervision between parked-scan batches"
+  [ ! -e "$state/.last-parked-scan" ] || fail "fleet scan completed before the delayed second batch"
+  pass "parked-run scans resume watcher duties between bounded fleet batches"
+}
+
 # --- actionable wakes are surfaced (queue + exit) ---------------------------
 
 test_actionable_signal_surfaced() {
@@ -817,6 +859,7 @@ test_same_gate_reentry_is_surfaced
 test_multiple_parked_runs_emit_one_afk_wake
 test_parked_scan_bounds_each_complete_read
 test_parked_scan_bounds_reader_concurrency
+test_parked_scan_services_watcher_between_batches
 test_actionable_signal_surfaced
 test_terminal_stale_surfaced
 test_stale_terminal_status_overridden_by_active_run

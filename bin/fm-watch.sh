@@ -272,8 +272,9 @@ wedge_timer_check() {  # <window> <since-file> <triage-label>
 }
 
 # Print one "<task>\t<state line>" row for each newly observed branch-matched
-# no-mistakes run parked at an awaiting_agent gate. This runs independently of
-# pane hashes because a gate may leave a pane looking busy or unchanged forever.
+# no-mistakes run parked at an awaiting_agent gate in the next fleet batch.
+# This runs independently of pane hashes because a gate may leave a pane looking
+# busy or unchanged forever.
 # A sentinel suppresses repeat wakes for the same parked run. It is cleared only
 # when a later authoritative run-step read proves that the run moved on; an
 # unreadable transient must not turn into alert spam.
@@ -288,14 +289,12 @@ bounded_crew_state() {  # <task>
 }
 
 newly_parked_runs() {
-  local meta id kind line marker identity previous run_id gate occurrence scan_dir count i batch_start active
+  local meta id kind line marker identity previous run_id gate occurrence scan_dir cursor count start end i
   local -a ids pids
   scan_dir="$STATE/.parked-scan-$$"
   rm -rf "$scan_dir"
   mkdir -p "$scan_dir" || return 0
   count=0
-  batch_start=0
-  active=0
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
     kind=$(grep '^kind=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
@@ -303,47 +302,67 @@ newly_parked_runs() {
     [ "$kind" = ship ] || continue
     id=$(basename "$meta"); id=${id%.meta}
     ids[count]=$id
-    (bounded_crew_state "$id" > "$scan_dir/$count" 2>/dev/null || true) &
-    pids[count]=$!
     count=$((count + 1))
-    active=$((active + 1))
-    if [ "$active" -eq "$PARKED_SCAN_CONCURRENCY" ]; then
-      i=$batch_start
-      while [ "$i" -lt "$count" ]; do
-        wait "${pids[$i]}" 2>/dev/null || true
-        i=$((i + 1))
-      done
-      batch_start=$count
-      active=0
-    fi
   done
 
-  i=$batch_start
-  while [ "$i" -lt "$count" ]; do
+  cursor=$(cat "$STATE/.parked-scan-cursor" 2>/dev/null || true)
+  start=0
+  if [ -n "$cursor" ]; then
+    for i in "${!ids[@]}"; do
+      if [ "${ids[$i]}" = "$cursor" ]; then
+        start=$((i + 1))
+        break
+      fi
+    done
+  fi
+  end=$((start + PARKED_SCAN_CONCURRENCY))
+  [ "$end" -le "$count" ] || end=$count
+
+  i=$start
+  while [ "$i" -lt "$end" ]; do
+    id=${ids[$i]}
+    (bounded_crew_state "$id" > "$scan_dir/$i" 2>/dev/null || true) &
+    pids[$i]=$!
+    i=$((i + 1))
+  done
+  i=$start
+  while [ "$i" -lt "$end" ]; do
     wait "${pids[$i]}" 2>/dev/null || true
     i=$((i + 1))
   done
 
-  for i in "${!ids[@]}"; do
+  i=$start
+  while [ "$i" -lt "$end" ]; do
     id=${ids[$i]}
     line=$(cat "$scan_dir/$i" 2>/dev/null || true)
     marker="$STATE/.parked-$id"
     case "$line" in
       "state: parked "*"source: run-step"*)
-        case "$line" in *"run-id: "*" · gate: "*" · gate-occurrence: "*" · "*) ;; *) continue ;; esac
-        run_id=${line#*run-id: }; run_id=${run_id%% ·*}
-        gate=${line#* · gate: }; gate=${gate%% ·*}
-        occurrence=${line#* · gate-occurrence: }; occurrence=${occurrence%% ·*}
-        identity="run-id: $run_id · gate: $gate · gate-occurrence: $occurrence"
-        previous=$(cat "$marker" 2>/dev/null || true)
-        [ "$occurrence" = unknown ] || [ "$previous" != "$identity" ] || continue
-        printf '%s\t%s\t%s\n' "$id" "$identity" "$line"
+        case "$line" in
+          *"run-id: "*" · gate: "*" · gate-occurrence: "*" · "*)
+            run_id=${line#*run-id: }; run_id=${run_id%% ·*}
+            gate=${line#* · gate: }; gate=${gate%% ·*}
+            occurrence=${line#* · gate-occurrence: }; occurrence=${occurrence%% ·*}
+            identity="run-id: $run_id · gate: $gate · gate-occurrence: $occurrence"
+            previous=$(cat "$marker" 2>/dev/null || true)
+            if [ "$occurrence" = unknown ] || [ "$previous" != "$identity" ]; then
+              printf '%s\t%s\t%s\n' "$id" "$identity" "$line"
+            fi
+            ;;
+        esac
         ;;
       "state: "*"source: run-step"*)
         rm -f "$marker"
         ;;
     esac
+    i=$((i + 1))
   done
+  if [ "$end" -lt "$count" ]; then
+    printf '%s\n' "${ids[$((end - 1))]}" > "$STATE/.parked-scan-cursor"
+  else
+    rm -f "$STATE/.parked-scan-cursor"
+    touch "$STATE/.last-parked-scan"
+  fi
   rm -rf "$scan_dir"
 }
 
@@ -483,7 +502,6 @@ while :; do
   # crew pane never becomes stale or reports a new status line.
   if [ "$(age_of "$STATE/.last-parked-scan")" -ge "$PARKED_SCAN_INTERVAL" ]; then
     parked=$(newly_parked_runs)
-    touch "$STATE/.last-parked-scan"
     if [ -n "$parked" ]; then
       parked_reason=""
       while IFS=$(printf '\t') read -r id identity line; do
