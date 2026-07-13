@@ -75,13 +75,28 @@ test_classify_check_and_unknown_escalate() {
 
 test_parked_wake_escalates() {
   local out reason
-  reason="parked: crew-x (state: parked · source: run-step); crew-y (state: parked · source: run-step)"
+  reason="parked: crew-x (awaiting_agent observed · source: run-step); crew-y (awaiting_agent observed · source: run-step)"
   is_wake_reason "$reason" \
     || fail "parked run was not recognized as a watcher wake"
   out=$(classify_parked "$reason")
   case "$out" in escalate\|*) ;; *) fail "parked run did not escalate: $out" ;; esac
   case "$out" in *crew-x*crew-y*) ;; *) fail "combined parked wake omitted a crew: $out" ;; esac
   pass "combined parked watcher wakes escalate every crew to the away-mode supervisor"
+}
+
+test_possible_wedge_wake_preserves_uncertainty() {
+  local out reason
+  reason="possible-wedge: crew-x (state: possible-wedge · source: run-list · provisional for 240s)"
+  is_wake_reason "$reason" || fail "possible wedge was not recognized as a watcher wake"
+  out=$(classify_possible_wedge "$reason")
+  case "$out" in escalate\|*) ;; *) fail "possible wedge did not escalate: $out" ;; esac
+  case "$out" in *awaiting_agent*) fail "possible wedge was mislabeled as an observed gate: $out" ;; esac
+
+  reason="supervision: parked: crew-x (awaiting_agent observed); possible-wedge: crew-y (provisional activity)"
+  is_wake_reason "$reason" || fail "mixed supervision batch was not recognized as a watcher wake"
+  out=$(classify_supervision "$reason")
+  case "$out" in *"awaiting_agent observed"*"possible-wedge"*) ;; *) fail "mixed supervision batch lost its evidence classes: $out" ;; esac
+  pass "possible wedges remain distinct from observed awaiting-agent gates"
 }
 
 test_stale_transient_self_records_marker() {
@@ -984,6 +999,7 @@ test_classify_routine_signal_self
 test_classify_terminal_signal_escalates
 test_classify_check_and_unknown_escalate
 test_parked_wake_escalates
+test_possible_wedge_wake_preserves_uncertainty
 test_stale_transient_self_records_marker
 test_stale_terminal_escalates
 test_housekeeping_persistent_stale_escalates

@@ -22,6 +22,9 @@
 #                          wedge threshold also surfaces. Unless afk is active.
 #   parked: <task>         a branch-matched no-mistakes run is awaiting_agent;
 #                          always actionable, independent of pane activity.
+#   possible-wedge: <task> provisional run-list evidence exceeded its bounded
+#                          wait without authoritative run-step confirmation.
+#   supervision: ...      one parked-scan batch contained both kinds above.
 #   check: <script>: <out> per-task check output, always actionable
 #   heartbeat              fleet-scan backstop found an unsurfaced captain-relevant
 #                          status, unless afk is active
@@ -362,7 +365,7 @@ newly_parked_runs() {
         provisional_age=$(age_of "$provisional_since")
         if [ "$provisional_age" -ge "$STALE_ESCALATE_SECS" ]; then
           if [ -e "$provisional_since" ]; then
-            printf '%s\t%s\t%s\n' "$id" provisional "state: parked · source: run-list · ${line#* · } · provisional for ${provisional_age}s, possible wedge"
+            printf '%s\t%s\t%s\n' "$id" provisional "state: possible-wedge · source: run-list · ${line#* · } · provisional for ${provisional_age}s"
           else
             touch "$provisional_since"
           fi
@@ -522,24 +525,38 @@ while :; do
     parked=$(newly_parked_runs)
     if [ -n "$parked" ]; then
       parked_reason=""
+      wedge_reason=""
       while IFS=$(printf '\t') read -r id identity line; do
         [ -n "$id" ] || continue
-        reason="parked: $id ($line)"
-        fm_wake_append parked "$id" "$reason" || exit 1
         if [ "$identity" = provisional ]; then
+          reason="possible-wedge: $id ($line)"
+          fm_wake_append possible-wedge "$id" "$reason" || exit 1
           touch "$STATE/.parked-provisional-since-$id"
+          if [ -n "$wedge_reason" ]; then
+            wedge_reason="$wedge_reason; ${reason#possible-wedge: }"
+          else
+            wedge_reason=$reason
+          fi
         else
+          reason="parked: $id (awaiting_agent observed · ${line#state: parked · })"
+          fm_wake_append parked "$id" "$reason" || exit 1
           printf '%s\n' "$identity" > "$STATE/.parked-$id"
-        fi
-        if [ -n "$parked_reason" ]; then
-          parked_reason="$parked_reason; ${reason#parked: }"
-        else
-          parked_reason=$reason
+          if [ -n "$parked_reason" ]; then
+            parked_reason="$parked_reason; ${reason#parked: }"
+          else
+            parked_reason=$reason
+          fi
         fi
       done <<EOF
 $parked
 EOF
-      wake "$parked_reason"
+      if [ -n "$parked_reason" ] && [ -n "$wedge_reason" ]; then
+        wake "supervision: $parked_reason; $wedge_reason"
+      elif [ -n "$parked_reason" ]; then
+        wake "$parked_reason"
+      else
+        wake "$wedge_reason"
+      fi
     fi
   fi
 

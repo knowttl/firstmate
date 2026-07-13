@@ -292,7 +292,7 @@ test_parked_run_surfaced_without_pane_staleness() {
     "$WATCH" > "$out" &
   pid=$!
   wait_for_exit "$pid" 40 || fail "watcher did not wake for a parked run without waiting for pane staleness"
-  grep -F "parked: task (state: parked" "$out" >/dev/null || fail "watcher did not print the parked-run wake"
+  grep -F "parked: task (awaiting_agent observed" "$out" >/dev/null || fail "watcher did not print the observed parked-run wake"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the parked run failed"
   grep "$(printf '\tparked\t')" "$drain_out" | grep -F "parked 1h44m" >/dev/null \
     || fail "parked run was not queued with its duration"
@@ -410,7 +410,9 @@ test_provisional_run_list_is_bounded_then_escalated() {
   pid=$!
   wait_for_exit "$pid" 40 || fail "watcher did not escalate stale provisional run-list evidence"
   grep -F "source: run-list" "$out" >/dev/null || fail "provisional escalation omitted its evidence source"
-  grep -F "possible wedge" "$out" >/dev/null || fail "provisional escalation was not labeled as a possible wedge"
+  grep -F "possible-wedge: task (state: possible-wedge" "$out" >/dev/null \
+    || fail "provisional escalation was not classified as a possible wedge"
+  ! grep -F "awaiting_agent" "$out" >/dev/null || fail "provisional escalation was mislabeled as an observed gate"
   unset FM_FAKE_CREW_STATE
   pass "provisional run-list evidence starts a timer and wedge-escalates when it expires"
 }
@@ -429,8 +431,8 @@ test_multiple_parked_runs_emit_one_afk_wake() {
   pid=$!
   wait_for_exit "$pid" 40 || fail "watcher did not wake for multiple parked runs in away mode"
   [ "$(wc -l < "$out" | tr -d '[:space:]')" = 1 ] || fail "multiple parked runs did not emit one combined wake"
-  grep -F "parked: alpha (state: parked" "$out" >/dev/null || fail "combined wake omitted alpha"
-  grep -F "; bravo (state: parked" "$out" >/dev/null || fail "combined wake omitted bravo or changed deterministic order"
+  grep -F "parked: alpha (awaiting_agent observed" "$out" >/dev/null || fail "combined wake omitted alpha"
+  grep -F "; bravo (awaiting_agent observed" "$out" >/dev/null || fail "combined wake omitted bravo or changed deterministic order"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after multiple parked runs failed"
   [ "$(grep -c "$(printf '\tparked\t')" "$drain_out")" = 2 ] || fail "multiple parked runs did not retain individual durable wakes"
   if [ ! -e "$state/.parked-alpha" ] || [ ! -e "$state/.parked-bravo" ]; then
@@ -438,6 +440,40 @@ test_multiple_parked_runs_emit_one_afk_wake() {
   fi
   unset FM_FAKE_CREW_STATE
   pass "multiple parked runs emit one deterministic away-mode wake and retain durable records"
+}
+
+test_mixed_parked_scan_preserves_evidence_classes() {
+  local dir state fakebin out drain_out pid
+  dir=$(make_case mixed-parked-scan); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  fm_write_meta "$state/alpha.meta" "kind=ship"
+  fm_write_meta "$state/bravo.meta" "kind=ship"
+  touch "$state/.parked-provisional-since-bravo"
+  touch -d '10 minutes ago' "$state/.parked-provisional-since-bravo" 2>/dev/null \
+    || touch -t 202001010000 "$state/.parked-provisional-since-bravo"
+  cat > "$fakebin/fm-crew-state.sh" <<'SH'
+#!/usr/bin/env bash
+case "$1" in
+  alpha) printf '%s\n' 'state: parked · source: run-step · run-id: 01RUN · branch: fm/alpha · gate: review · gate-occurrence: 1000 · parked 1m at review' ;;
+  bravo) printf '%s\n' 'state: working · source: run-list · validating (background run)' ;;
+esac
+SH
+  chmod +x "$fakebin/fm-crew-state.sh"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not surface a mixed parked-scan batch"
+  grep -F "supervision: parked: alpha (awaiting_agent observed" "$out" >/dev/null \
+    || fail "mixed batch omitted the observed parked gate"
+  grep -F "possible-wedge: bravo (state: possible-wedge · source: run-list" "$out" >/dev/null \
+    || fail "mixed batch omitted the provisional possible wedge"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after mixed parked scan failed"
+  grep "$(printf '\tparked\t')" "$drain_out" | grep -F "awaiting_agent observed" >/dev/null \
+    || fail "mixed batch did not queue the observed gate as parked"
+  grep "$(printf '\tpossible-wedge\t')" "$drain_out" | grep -F "state: possible-wedge" >/dev/null \
+    || fail "mixed batch did not queue provisional evidence as a possible wedge"
+  pass "mixed parked scans preserve observed and provisional evidence classes"
 }
 
 test_parked_scan_bounds_each_complete_read() {
@@ -922,6 +958,7 @@ test_provisional_run_list_preserves_parked_marker
 test_provisional_run_list_is_bounded_then_escalated
 test_same_gate_reentry_is_surfaced
 test_multiple_parked_runs_emit_one_afk_wake
+test_mixed_parked_scan_preserves_evidence_classes
 test_parked_scan_bounds_each_complete_read
 test_parked_scan_bounds_reader_concurrency
 test_parked_scan_services_watcher_between_batches
