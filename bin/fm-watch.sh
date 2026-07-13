@@ -275,7 +275,7 @@ wedge_timer_check() {  # <window> <since-file> <triage-label>
 # when a later authoritative run-step read proves that the run moved on; an
 # unreadable transient must not turn into alert spam.
 newly_parked_runs() {
-  local meta id kind line marker identity previous run_id gate scan_dir count i
+  local meta id kind line marker identity previous run_id gate occurrence scan_dir count i
   local -a ids pids
   scan_dir="$STATE/.parked-scan-$$"
   rm -rf "$scan_dir"
@@ -303,10 +303,11 @@ newly_parked_runs() {
     marker="$STATE/.parked-$id"
     case "$line" in
       "state: parked "*"source: run-step"*)
-        case "$line" in *"run-id: "*" · gate: "*" · "*) ;; *) continue ;; esac
+        case "$line" in *"run-id: "*" · gate: "*" · gate-occurrence: "*" · "*) ;; *) continue ;; esac
         run_id=${line#*run-id: }; run_id=${run_id%% ·*}
         gate=${line#* · gate: }; gate=${gate%% ·*}
-        identity="run-id: $run_id · gate: $gate"
+        occurrence=${line#* · gate-occurrence: }; occurrence=${occurrence%% ·*}
+        identity="run-id: $run_id · gate: $gate · gate-occurrence: $occurrence"
         previous=$(cat "$marker" 2>/dev/null || true)
         [ "$previous" = "$identity" ] || printf '%s\t%s\t%s\n' "$id" "$identity" "$line"
         ;;

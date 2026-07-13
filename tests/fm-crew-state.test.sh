@@ -71,6 +71,8 @@ case "${1:-}" in
     ;;
   runs)
     printf '%s\n' "${FM_FAKE_RUNS_LIST:-}" ;;
+  status)
+    printf '    repo:  %s\n' "${FM_FAKE_REPO_PATH:-}" ;;
 esac
 exit 0
 SH
@@ -118,6 +120,11 @@ esac
 exit 0
 SH
   chmod +x "$fb/no-mistakes" "$fb/tmux" "$fb/herdr"
+  cat > "$fb/node" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "${FM_FAKE_RUN_IDENTITY:-}"
+SH
+  chmod +x "$fb/node"
   printf '%s\n' "$fb"
 }
 
@@ -151,12 +158,15 @@ reset_fakes() {
   FM_FAKE_AXI_STATUS=""
   FM_FAKE_AXI_STATUS_RUN=""
   FM_FAKE_RUNS_LIST=""
+  FM_FAKE_RUN_IDENTITY=""
+  FM_FAKE_REPO_PATH=""
   FM_FAKE_BUSY=0
   FM_FAKE_TMUX_MISSING=0
   FM_FAKE_HERDR_BUSY=0
   FM_FAKE_HERDR_MISSING=0
   FM_FAKE_HERDR_AGENT_STATUS=""
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_TMUX_MISSING
+  export FM_FAKE_RUN_IDENTITY FM_FAKE_REPO_PATH
   export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS
 }
 
@@ -443,6 +453,9 @@ test_cross_branch_attribution_via_runs_list() {
   fm_write_meta "$d/state/feat-f.meta" "window=fm:fm-feat-f" "worktree=$d/wt" "kind=ship"
   # The repo-wide active/most-recent run belongs to a different crew's branch.
   FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_AXI_STATUS_RUN="$(run_running fm/feat-f)"
+  FM_FAKE_REPO_PATH="$d/repo"
+  FM_FAKE_RUN_IDENTITY='01RUN|'
   # Real `no-mistakes runs` shape: plain text, newest-first, no run id, no
   # quoting - "<status> <branch> <short-sha> <date> [<pr-url>]".
   FM_FAKE_RUNS_LIST="$(cat <<'EOF'
@@ -456,6 +469,22 @@ EOF
   pass "cross-branch run is attributed via the real runs list"
 }
 
+test_cross_branch_parked_run_uses_detailed_status() {
+  reset_fakes
+  local d; d=$(new_case crossbranch-parked)
+  make_repo_on_branch "$d/wt" fm/feat-parked
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-parked.meta" "window=fm:fm-feat-parked" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_AXI_STATUS_RUN="$(run_parked fm/feat-parked)"
+  FM_FAKE_REPO_PATH="$d/repo"
+  FM_FAKE_RUN_IDENTITY='01RUN|1720000000'
+  local out; out=$(run_crew_state "$d" feat-parked)
+  assert_contains "$out" "state: parked" "cross-branch detailed status preserves awaiting_agent"
+  assert_contains "$out" "gate-occurrence: 1720000000" "parked status includes its stable occurrence identity"
+  pass "cross-branch run ID is resolved before detailed parked classification"
+}
+
 # The runs list is newest-first; a branch with an OLDER completed run must not
 # shadow its own newer active one - the first (topmost) matching row wins.
 test_cross_branch_attribution_picks_most_recent_row() {
@@ -465,6 +494,9 @@ test_cross_branch_attribution_picks_most_recent_row() {
   make_fakebin "$d" >/dev/null
   fm_write_meta "$d/state/feat-fq.meta" "window=fm:fm-feat-fq" "worktree=$d/wt" "kind=ship"
   FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_AXI_STATUS_RUN="$(run_running fm/feat-fq)"
+  FM_FAKE_REPO_PATH="$d/repo"
+  FM_FAKE_RUN_IDENTITY='01RUN|'
   FM_FAKE_RUNS_LIST="$(cat <<'EOF'
   running    fm/other-crew aaaaaaa  2026-07-02 22:10
   running    fm/feat-fq ccccccc  2026-07-02 21:50
@@ -497,6 +529,20 @@ EOF
   assert_contains "$out" "source: status-log" "no own run -> falls back to status-log"
   assert_contains "$out" "state: done" "falls back to the log verb"
   pass "another branch's run is ignored, falls back"
+}
+
+test_coarse_running_row_is_not_authoritative() {
+  reset_fakes
+  local d; d=$(new_case coarse-running)
+  make_repo_on_branch "$d/wt" fm/feat-coarse
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-coarse.meta" "window=fm:fm-feat-coarse" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST='running fm/feat-coarse bbbbbbb 2026-07-02 22:05'
+  FM_FAKE_BUSY=0
+  local out; out=$(run_crew_state "$d" feat-coarse)
+  assert_not_contains "$out" "source: run-step" "coarse running row cannot disprove awaiting_agent"
+  pass "coarse cross-branch running status is not authoritative"
 }
 
 # (f) no run for this crew + a busy pane -> working via pane
@@ -740,6 +786,9 @@ test_provably_working_via_runs_list_fallback() {
   make_fakebin "$d" >/dev/null
   fm_write_meta "$d/state/feat-provable.meta" "window=fm:fm-feat-provable" "worktree=$d/wt" "kind=ship"
   FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_AXI_STATUS_RUN="$(run_running fm/feat-provable)"
+  FM_FAKE_REPO_PATH="$d/repo"
+  FM_FAKE_RUN_IDENTITY='01RUN|'
   FM_FAKE_RUNS_LIST="$(cat <<'EOF'
   running    fm/other-crew aaaaaaa  2026-07-02 22:10
   running    fm/feat-provable bbbbbbb  2026-07-02 22:05
@@ -789,8 +838,10 @@ test_ci_ready_done_log_beats_monitoring_run
 test_terminal_passed
 test_terminal_failed
 test_cross_branch_attribution_via_runs_list
+test_cross_branch_parked_run_uses_detailed_status
 test_cross_branch_attribution_picks_most_recent_row
 test_other_branch_run_ignored
+test_coarse_running_row_is_not_authoritative
 test_no_run_busy_pane
 test_no_run_herdr_unknown_uses_backend_capture
 test_no_run_herdr_idle_agent_status_corroborated_by_busy_pane
