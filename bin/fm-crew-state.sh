@@ -389,11 +389,8 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
       HAVE_RUN=1
     else
       # The active-or-most-recent run is for another branch (the CLI is alive
-      # and answered; only the attribution missed) - try the coarse fallback.
-      # Deliberately nested inside `[ -n "$RUN_OUT" ]`: an empty/timed-out
-      # primary call means the CLI itself did not respond, so retrying it
-      # immediately with a second bounded call would just double the wait
-      # for no better answer.
+      # and answered; only the attribution missed) - try to resolve this
+      # branch's detailed run directly.
       run_identity=$(nm_run_identity_for_branch "$CREW_BRANCH")
       run_id=${run_identity%%|*}
       if [ -n "$run_identity" ] && [ -n "$run_id" ]; then
@@ -402,14 +399,14 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
         run_branch=$(strip_quotes "$(nm_field branch)")
         [ "$run_branch" = "$CREW_BRANCH" ] && HAVE_RUN=1
       fi
-      if [ "$HAVE_RUN" = 0 ]; then
-        COARSE_STATUS=$(nm_runs_status_for_branch "$CREW_BRANCH")
-      fi
-      if [ "$HAVE_RUN" = 0 ] && [ -n "$COARSE_STATUS" ]; then
-        HAVE_RUN=1
-        RUN_SOURCE=coarse
-      fi
     fi
+  fi
+  if [ "$HAVE_RUN" = 0 ]; then
+    COARSE_STATUS=$(nm_runs_status_for_branch "$CREW_BRANCH")
+  fi
+  if [ -n "$COARSE_STATUS" ]; then
+    HAVE_RUN=1
+    RUN_SOURCE=coarse
   fi
 fi
 

@@ -569,6 +569,22 @@ test_coarse_running_row_is_provisionally_active() {
   pass "coarse cross-branch running status is provisionally active"
 }
 
+test_empty_primary_status_uses_provisional_run_list() {
+  reset_fakes
+  local d; d=$(new_case empty-primary-status)
+  make_repo_on_branch "$d/wt" fm/feat-empty-primary
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-empty-primary.meta" "window=fm:fm-feat-empty-primary" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST='running fm/feat-empty-primary bbbbbbb 2026-07-02 22:05'
+  FM_FAKE_BUSY=1
+  local out; out=$(run_crew_state "$d" feat-empty-primary)
+  assert_contains "$out" "state: working" "empty primary status lost the matching run-list row"
+  assert_contains "$out" "source: run-list" "empty primary status bypassed provisional run attribution"
+  assert_not_contains "$out" "source: pane" "busy pane hid provisional run attribution"
+  pass "empty primary status falls back to provisional run-list evidence"
+}
+
 # (f) no run for this crew + a busy pane -> working via pane
 test_no_run_busy_pane() {
   reset_fakes
@@ -750,8 +766,8 @@ SH
   assert_contains "$out" "source: pane" "timed-out no-mistakes -> pane source"
   [ "$elapsed" -lt 5 ] || fail "perl timeout did not bound no-mistakes calls (elapsed ${elapsed}s)"
   calls=$(awk 'END { print NR + 0 }' "$calls_file" 2>/dev/null || echo 0)
-  [ "$calls" -eq 1 ] || fail "empty no-mistakes status triggered extra lookups ($calls calls)"
-  pass "no timeout command uses perl bound"
+  [ "$calls" -eq 2 ] || fail "timed-out status did not use exactly one bounded run-list fallback ($calls calls)"
+  pass "no timeout command bounds status and run-list fallback"
 }
 
 # (i) kind=scout skips the run lookup entirely (its deliverable is a report).
@@ -864,6 +880,7 @@ test_cross_branch_parked_run_uses_detailed_status
 test_cross_branch_attribution_picks_most_recent_row
 test_other_branch_run_ignored
 test_coarse_running_row_is_provisionally_active
+test_empty_primary_status_uses_provisional_run_list
 test_no_run_busy_pane
 test_no_run_herdr_unknown_uses_backend_capture
 test_no_run_herdr_idle_agent_status_corroborated_by_busy_pane
