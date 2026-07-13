@@ -156,6 +156,24 @@ ROWS
   pass "bootstrap enforces no-mistakes minimum version"
 }
 
+test_node_sqlite_capability() {
+  local case_dir fakebin out missing
+  case_dir="$TMP_ROOT/node-sqlite"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  cat > "$fakebin/node" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+  chmod +x "$fakebin/node"
+  missing="MISSING: node (install: brew install node  # or the platform's package manager)"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  [ "$out" = "$missing" ] || fail "node without node:sqlite DatabaseSync should require an upgrade, got: $out"
+  pass "bootstrap requires node:sqlite DatabaseSync support"
+}
+
 test_orca_backend_gates_orca_tool_only_when_selected() {
   local case_dir fakebin out missing_orca
   missing_orca="MISSING: orca (install: brew install orca  # or the platform's package manager)"
@@ -244,7 +262,7 @@ test_review_tool_override_is_validated_and_surfaced() {
   assert_contains "$out" "REVIEW_TOOL_OVERRIDE: invalid config/review-tool" "unsafe review-tool override was not rejected"
   [ ! -e "$case_dir/home/injected" ] || fail "unsafe review-tool override executed shell syntax"
 
-  for reserved in tmux node gh curl jq orca treehouse no-mistakes gh-axi chrome-devtools-axi tasks-axi; do
+  for reserved in bash brew git npm sh tmux node gh curl jq orca treehouse no-mistakes gh-axi chrome-devtools-axi tasks-axi; do
     printf '%s\n' "$reserved" > "$case_dir/home/config/review-tool"
     out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
       FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
@@ -256,6 +274,7 @@ test_review_tool_override_is_validated_and_surfaced() {
 
 test_bootstrap_reporting
 test_no_mistakes_min_version
+test_node_sqlite_capability
 test_orca_backend_gates_orca_tool_only_when_selected
 test_crew_dispatch_active_rules_are_surfaced
 test_crew_dispatch_validation

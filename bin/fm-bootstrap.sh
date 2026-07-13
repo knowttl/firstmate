@@ -185,7 +185,7 @@ review_tool_name() {
       if [ -n "$v" ]; then
         case "$v" in
           *[!A-Za-z0-9._-]*|[.-]*) return 1 ;;
-          tmux|node|gh|curl|jq|orca|treehouse|no-mistakes|gh-axi|chrome-devtools-axi|tasks-axi) return 1 ;;
+          bash|brew|git|npm|sh|tmux|node|gh|curl|jq|orca|treehouse|no-mistakes|gh-axi|chrome-devtools-axi|tasks-axi) return 1 ;;
         esac
         printf '%s' "$v"
         return 0
@@ -196,6 +196,10 @@ review_tool_name() {
 }
 REVIEW_TOOL_VALID=1
 REVIEW_TOOL=$(review_tool_name) || { REVIEW_TOOL=lavish-axi; REVIEW_TOOL_VALID=0; }
+
+node_sqlite_compatible() {
+  node -e "const { DatabaseSync } = require('node:sqlite'); if (typeof DatabaseSync !== 'function') process.exit(1)" >/dev/null 2>&1
+}
 
 install_cmd() {
   case "$1" in
@@ -433,6 +437,9 @@ fi
 for t in $TOOLS; do
   command -v "$t" >/dev/null || echo "MISSING: $t (install: $(install_cmd "$t"))"
 done
+if command -v node >/dev/null 2>&1 && ! node_sqlite_compatible; then
+  echo "MISSING: node (install: $(install_cmd node))"
+fi
 if command -v treehouse >/dev/null 2>&1 && ! treehouse_supports_lease; then
   echo "MISSING: treehouse (install: $(install_cmd treehouse))"
 fi
