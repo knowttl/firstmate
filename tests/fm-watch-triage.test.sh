@@ -370,8 +370,9 @@ test_multiple_parked_runs_emit_one_afk_wake() {
   grep -F "; bravo (state: parked" "$out" >/dev/null || fail "combined wake omitted bravo or changed deterministic order"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after multiple parked runs failed"
   [ "$(grep -c "$(printf '\tparked\t')" "$drain_out")" = 2 ] || fail "multiple parked runs did not retain individual durable wakes"
-  [ -e "$state/.parked-alpha" ] && [ -e "$state/.parked-bravo" ] \
-    || fail "multiple parked runs did not record each repeat-wake suppressor"
+  if [ ! -e "$state/.parked-alpha" ] || [ ! -e "$state/.parked-bravo" ]; then
+    fail "multiple parked runs did not record each repeat-wake suppressor"
+  fi
   unset FM_FAKE_CREW_STATE
   pass "multiple parked runs emit one deterministic away-mode wake and retain durable records"
 }
