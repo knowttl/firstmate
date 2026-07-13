@@ -354,6 +354,7 @@ newly_parked_runs() {
             gate=${line#* · gate: }; gate=${gate%% ·*}
             occurrence=${line#* · gate-occurrence: }; occurrence=${occurrence%% ·*}
             previous=$(cat "$marker" 2>/dev/null || true)
+            marker_age=$(age_of "$marker")
             if [ "$occurrence" = unknown ]; then
               identity="branch: $branch · gate-occurrence: unknown"
               case "$previous" in
@@ -361,8 +362,10 @@ newly_parked_runs() {
               esac
             else
               identity="run-id: $run_id · branch: $branch · gate: $gate · gate-occurrence: $occurrence"
+              if [ "$previous" = "branch: $branch · gate-occurrence: unknown" ] && [ "$marker_age" -lt "$STALE_ESCALATE_SECS" ]; then
+                identity=$previous
+              fi
             fi
-            marker_age=$(age_of "$marker")
             if [ "$previous" != "$identity" ] || { [ "$occurrence" = unknown ] && [ "$marker_age" -ge "$STALE_ESCALATE_SECS" ]; }; then
               printf '%s\t%s\t%s\n' "$id" "$identity" "$line"
             fi

@@ -397,6 +397,33 @@ test_unknown_gate_occurrence_preserves_detailed_identity() {
   pass "identity enrichment flapping preserves detailed markers and bounded re-escalation"
 }
 
+test_fallback_identity_enrichment_stays_bounded() {
+  local dir state fakebin out pid identity
+  dir=$(make_case fallback-identity-enrichment); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  fm_write_meta "$state/task.meta" "kind=ship"
+  printf '%s\n' 'branch: fm/task · gate-occurrence: unknown' > "$state/.parked-task"
+  identity='run-id: 01RUN · branch: fm/task · gate: review · gate-occurrence: 1000'
+  export FM_FAKE_CREW_STATE="state: parked · source: run-step · $identity · parked 1m at review"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  wait_live "$pid" 30 || fail "watcher resurfaced a fallback gate when identity enrichment recovered"
+  reap "$pid"
+  [ "$(cat "$state/.parked-task")" = 'branch: fm/task · gate-occurrence: unknown' ] || fail "fresh enrichment replaced the fallback parked marker"
+  [ ! -s "$state/.wake-queue" ] || fail "identity enrichment recovery queued a duplicate parked wake"
+  touch -d '10 minutes ago' "$state/.parked-task" 2>/dev/null || touch -t 202001010000 "$state/.parked-task"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not re-escalate an enriched fallback gate"
+  [ "$(cat "$state/.parked-task")" = "$identity" ] || fail "expired fallback marker did not upgrade to the detailed identity"
+  unset FM_FAKE_CREW_STATE
+  pass "fallback identity enrichment stays suppressed until bounded re-escalation"
+}
+
 test_provisional_run_list_preserves_parked_marker() {
   local dir state fakebin out pid
   dir=$(make_case provisional-run-list); state="$dir/state"; fakebin="$dir/fakebin"
@@ -1008,6 +1035,7 @@ test_parked_run_surfaced_without_pane_staleness
 test_consecutive_parked_gates_are_surfaced
 test_unknown_gate_occurrence_uses_bounded_fallback
 test_unknown_gate_occurrence_preserves_detailed_identity
+test_fallback_identity_enrichment_stays_bounded
 test_provisional_run_list_preserves_parked_marker
 test_provisional_run_list_is_bounded_then_escalated
 test_same_gate_reentry_is_surfaced
