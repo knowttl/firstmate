@@ -317,6 +317,34 @@ test_consecutive_parked_gates_are_surfaced() {
   pass "a new gate in the same run is not suppressed by the previous parked marker"
 }
 
+test_parked_scan_has_one_fleet_deadline() {
+  local dir state fakebin out pid started elapsed id
+  dir=$(make_case bounded-parked-scan); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  for id in a b c; do
+    fm_write_meta "$state/$id.meta" "window=test:fm-$id" "kind=ship"
+  done
+  cat > "$fakebin/fm-crew-state.sh" <<'SH'
+#!/usr/bin/env bash
+sleep 2
+printf '%s\n' 'state: unknown · source: none · delayed fake'
+SH
+  chmod +x "$fakebin/fm-crew-state.sh"
+  started=$(date +%s)
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PARKED_SCAN_INTERVAL=0 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  while [ ! -e "$state/.last-parked-scan" ] && kill -0 "$pid" 2>/dev/null; do
+    sleep 0.1
+  done
+  elapsed=$(($(date +%s) - started))
+  reap "$pid"
+  [ -e "$state/.last-parked-scan" ] || fail "bounded parked scan did not finish"
+  [ "$elapsed" -lt 4 ] || fail "parked scan serialized per-crew timeouts (${elapsed}s)"
+  pass "the full parked-run scan has one fleet-wide deadline"
+}
+
 # --- actionable wakes are surfaced (queue + exit) ---------------------------
 
 test_actionable_signal_surfaced() {
@@ -695,6 +723,7 @@ test_turn_ended_not_working_surfaced
 test_working_note_not_working_surfaced
 test_parked_run_surfaced_without_pane_staleness
 test_consecutive_parked_gates_are_surfaced
+test_parked_scan_has_one_fleet_deadline
 test_actionable_signal_surfaced
 test_terminal_stale_surfaced
 test_stale_terminal_status_overridden_by_active_run

@@ -275,14 +275,31 @@ wedge_timer_check() {  # <window> <since-file> <triage-label>
 # when a later authoritative run-step read proves that the run moved on; an
 # unreadable transient must not turn into alert spam.
 newly_parked_runs() {
-  local meta id kind line marker identity previous run_id gate
+  local meta id kind line marker identity previous run_id gate scan_dir count i
+  local -a ids pids
+  scan_dir="$STATE/.parked-scan-$$"
+  rm -rf "$scan_dir"
+  mkdir -p "$scan_dir" || return 0
+  count=0
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
     kind=$(grep '^kind=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
     [ -n "$kind" ] || kind=ship
     [ "$kind" = ship ] || continue
     id=$(basename "$meta"); id=${id%.meta}
-    line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null || true)
+    ids[$count]=$id
+    ("$FM_CREW_STATE_BIN" "$id" > "$scan_dir/$count" 2>/dev/null || true) &
+    pids[$count]=$!
+    count=$((count + 1))
+  done
+
+  for i in "${!pids[@]}"; do
+    wait "${pids[$i]}" 2>/dev/null || true
+  done
+
+  for i in "${!ids[@]}"; do
+    id=${ids[$i]}
+    line=$(cat "$scan_dir/$i" 2>/dev/null || true)
     marker="$STATE/.parked-$id"
     case "$line" in
       "state: parked "*"source: run-step"*)
@@ -298,6 +315,7 @@ newly_parked_runs() {
         ;;
     esac
   done
+  rm -rf "$scan_dir"
 }
 
 # Check and heartbeat cadence must survive actionable exits and restarts: the
