@@ -227,7 +227,7 @@ ROWS
 }
 
 test_review_tool_override_is_validated_and_surfaced() {
-  local case_dir fakebin out
+  local case_dir fakebin out reserved
   case_dir="$TMP_ROOT/review-tool"
   mkdir -p "$case_dir/home/config"
   printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
@@ -243,6 +243,14 @@ test_review_tool_override_is_validated_and_surfaced() {
     FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
   assert_contains "$out" "REVIEW_TOOL_OVERRIDE: invalid config/review-tool" "unsafe review-tool override was not rejected"
   [ ! -e "$case_dir/home/injected" ] || fail "unsafe review-tool override executed shell syntax"
+
+  for reserved in tmux node gh curl jq orca treehouse no-mistakes gh-axi chrome-devtools-axi tasks-axi; do
+    printf '%s\n' "$reserved" > "$case_dir/home/config/review-tool"
+    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+      FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+    assert_contains "$out" "REVIEW_TOOL_OVERRIDE: invalid config/review-tool" \
+      "reserved review-tool override was not rejected: $reserved"
+  done
   pass "bootstrap validates and surfaces the review-tool override"
 }
 

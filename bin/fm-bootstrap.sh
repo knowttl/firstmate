@@ -185,6 +185,7 @@ review_tool_name() {
       if [ -n "$v" ]; then
         case "$v" in
           *[!A-Za-z0-9._-]*|[.-]*) return 1 ;;
+          tmux|node|gh|curl|jq|orca|treehouse|no-mistakes|gh-axi|chrome-devtools-axi|tasks-axi) return 1 ;;
         esac
         printf '%s' "$v"
         return 0
