@@ -190,6 +190,7 @@ fi
 ORCA_ABORT_CLEANUP=0
 ORCA_WORKTREE_ID=
 ORCA_TERMINAL=
+TREEHOUSE_LEASED_WT=
 
 parse_orca_worktree_result() {
   local raw=$1 rest
@@ -210,6 +211,13 @@ parse_orca_worktree_result() {
 
 orca_spawn_abort_cleanup() {
   local status=$?
+  if [ -n "${TREEHOUSE_LEASED_WT:-}" ]; then
+    local leased_wt=$TREEHOUSE_LEASED_WT
+    TREEHOUSE_LEASED_WT=
+    if ! (cd "$PROJ_ABS" && treehouse return --force "$leased_wt"); then
+      echo "warning: failed to return leased worktree $leased_wt after spawn failure" >&2
+    fi
+  fi
   [ "$ORCA_ABORT_CLEANUP" = 1 ] || return "$status"
   ORCA_ABORT_CLEANUP=0
   if [ -n "${ORCA_TERMINAL:-}" ]; then
@@ -645,26 +653,10 @@ else
 fi
 [ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
 
-# PROJ_ABS can still carry a symlinked path component (e.g. macOS's /tmp ->
-# /private/tmp) when it came from the ship/scout branch's logical `pwd` above.
-# Every backend's own current-path read (tmux's pane_current_path, herdr's
-# foreground_cwd, zellij/cmux's active pwd probe against the live shell) can
-# report the OS-level, physically-resolved cwd, so comparing it against a
-# still-symlinked PROJ_ABS can misfire both ways: false-negative (the poll
-# below never notices the pane left the project) or false-positive (the
-# isolation guard refuses a spawn that never actually tangled). Canonicalize
-# once here so every downstream comparison uses the same physical form
-# (docs/herdr-backend.md "Known gaps").
+# Canonicalize the primary checkout once so the leased worktree's isolation
+# check compares physical paths even when a project was reached through a
+# symlinked prefix (for example macOS's /tmp -> /private/tmp).
 PROJ_ABS_REAL=$(cd "$PROJ_ABS" 2>/dev/null && pwd -P) || PROJ_ABS_REAL="$PROJ_ABS"
-
-real_path_or_raw() {  # <path>
-  local path=$1 real
-  if real=$(cd "$path" 2>/dev/null && pwd -P); then
-    printf '%s\n' "$real"
-  else
-    printf '%s\n' "$path"
-  fi
-}
 
 # Session-provider container-ensure + task creation. tmux stays exactly as P1
 # left it (same session-name / new-window sequence, see bin/backends/tmux.sh);
@@ -675,7 +667,7 @@ real_path_or_raw() {  # <path>
 # that every downstream operation (send/capture/kill) already treats as opaque
 # per-backend routing (fm_backend_resolve_selector).
 validate_spawn_worktree() {  # <source> <inspect-target>
-  local source=$1 inspect_target=$2 wt_real proj_real wt_top wt_top_real
+  local source=$1 inspect_target=$2 wt_real proj_real wt_top wt_top_real admin registration registration_real wt_common proj_common wt_common_real proj_common_real
   wt_real=
   if ! wt_real=$(cd "$WT" 2>/dev/null && pwd -P); then
     wt_real=
@@ -688,7 +680,34 @@ validate_spawn_worktree() {  # <source> <inspect-target>
   fi
   if [ -z "$wt_real" ] || [ -z "$wt_top_real" ] || [ "$wt_real" != "$wt_top_real" ] || [ "$wt_real" = "$proj_real" ]; then
     echo "error: $source did not yield an isolated worktree (resolved '$WT'; worktree root '${wt_top:-none}'; primary '$PROJ_ABS'); refusing to launch to avoid tangling the primary checkout. Inspect target $inspect_target" >&2
-    exit 1
+    return 1
+  fi
+  admin=$(git -C "$WT" rev-parse --git-dir 2>/dev/null || true)
+  registration=$(sed 's#/\.git$##' "$admin/gitdir" 2>/dev/null || true)
+  registration_real=
+  if [ -n "$registration" ]; then
+    registration_real=$(cd "$registration" 2>/dev/null && pwd -P || true)
+  fi
+  if [ -z "$registration_real" ] || [ "$registration_real" != "$wt_real" ]; then
+    echo "error: $source yielded '$WT', which does not match git's registered worktree path '${registration_real:-none}'; refusing aliased pool slot. Inspect target $inspect_target" >&2
+    return 1
+  fi
+  [ "$BACKEND" = orca ] && return 0
+  wt_common=$(git -C "$WT" rev-parse --git-common-dir 2>/dev/null || true)
+  proj_common=$(git -C "$PROJ_ABS" rev-parse --git-common-dir 2>/dev/null || true)
+  wt_common_real=
+  proj_common_real=
+  case "$wt_common" in
+    /*) wt_common_real=$(cd "$wt_common" 2>/dev/null && pwd -P || true) ;;
+    *) [ -z "$wt_common" ] || wt_common_real=$(cd "$WT/$wt_common" 2>/dev/null && pwd -P || true) ;;
+  esac
+  case "$proj_common" in
+    /*) proj_common_real=$(cd "$proj_common" 2>/dev/null && pwd -P || true) ;;
+    *) [ -z "$proj_common" ] || proj_common_real=$(cd "$PROJ_ABS/$proj_common" 2>/dev/null && pwd -P || true) ;;
+  esac
+  if [ -z "$wt_common_real" ] || [ -z "$proj_common_real" ] || [ "$wt_common_real" != "$proj_common_real" ]; then
+    echo "error: $source yielded '$WT', whose git-common-dir '${wt_common_real:-none}' is outside pool clone '$PROJ_ABS'; refusing foreign-repo slot. Inspect target $inspect_target" >&2
+    return 1
   fi
 }
 
@@ -808,14 +827,6 @@ spawn_send_text_line() {  # <target> <text>
     cmux) fm_backend_cmux_send_text_line "$1" "$2" "$W" ;;
   esac
 }
-spawn_current_path() {  # <target>
-  case "$BACKEND" in
-    tmux) fm_backend_tmux_current_path "$1" ;;
-    herdr) fm_backend_herdr_current_path "$1" ;;
-    zellij) fm_backend_zellij_current_path "$1" "$W" ;;
-    cmux) fm_backend_cmux_current_path "$1" "$W" ;;
-  esac
-}
 spawn_send_literal() {  # <target> <text>
   case "$BACKEND" in
     tmux) fm_backend_tmux_send_literal "$1" "$2" ;;
@@ -835,30 +846,17 @@ spawn_send_key() {  # <target> <key>
   esac
 }
 if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
-  spawn_send_text_line "$WT_TARGET" 'treehouse get'
-
-  # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
-  # Target the stable window id, not the name: if the name is ever lost (e.g. an
-  # automatic-rename slips through), display-message -t <bad-name> falls back to the
-  # active client's window, which would misread firstmate's OWN pane path as the
-  # worktree and tangle a hook into the primary checkout. The window id never lies.
-  # Compare against PROJ_ABS_REAL (physical), not PROJ_ABS: a symlinked project
-  # prefix would otherwise make the pane's OS-level cwd read differ from
-  # PROJ_ABS on the very first poll, before the pane has actually moved.
-  for _ in $(seq 1 60); do
-    p=$(spawn_current_path "$WT_TARGET" || true)
-    if [ -n "$p" ] && [ "$(real_path_or_raw "$p")" != "$PROJ_ABS_REAL" ]; then
-      WT="$p"
-      break
-    fi
-    sleep 1
-  done
+  WT=$(cd "$PROJ_ABS" && treehouse get --lease --lease-holder "fm-$ID") || {
+    echo "error: treehouse get --lease failed to lease a worktree" >&2
+    exit 1
+  }
   if [ -z "$WT" ]; then
-    echo "error: treehouse get did not enter a worktree within 60s; inspect window $T" >&2
+    echo "error: treehouse get --lease did not report a worktree" >&2
     exit 1
   fi
-
-  validate_spawn_worktree "treehouse get" "$T"
+  TREEHOUSE_LEASED_WT=$WT
+  validate_spawn_worktree "treehouse get --lease" "$T" || exit 1
+  spawn_send_text_line "$WT_TARGET" "cd $(shell_quote "$WT")"
 fi
 
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't
@@ -1030,6 +1028,7 @@ META_WINDOW=$T
   fi
 } > "$STATE/$ID.meta"
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
+TREEHOUSE_LEASED_WT=
 
 sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")
