@@ -517,8 +517,9 @@ Other runtime backends, including zellij, orca, and cmux, are not yet supported 
 
 **Injection dispatch.** `inject_msg`'s pane-exists probe, busy-guard (`pane_is_busy`), composer-guard (a direct `fm_backend_composer_state` read; see the composer-safety note below), and verified submit all take an optional `<backend>` argument (defaulting to `tmux` when omitted, so every pre-existing caller/test is unaffected) and route through the generic dispatchers instead of calling `tmux` directly.
 For `backend=tmux` every dispatch resolves to the exact same underlying call as before (`fm_backend_capture`'s tmux arm runs the identical `tmux capture-pane -p -t <target> -S -40`; `fm_backend_tmux_send_text_submit` re-exports `fm_tmux_submit_core` verbatim), so tmux behavior is unchanged byte-for-byte.
-For `backend=herdr`, busy detection tries the native `agent.get`-backed `fm_backend_herdr_busy_state` first, trusts only `busy` outright, and corroborates every non-`busy` verdict with the shared regex-over-capture reader before treating the supervisor pane as not busy.
-This mirrors the per-task stale-pane busy check `bin/fm-supervise-daemon.sh`'s `stale_window_is_busy` already used; composer/pending detection and the verified submit route through `fm_backend_herdr_composer_state`/`fm_backend_herdr_send_text_submit`.
+For `backend=herdr`, the supervisor injection guard treats native `agent.get` `busy` and `idle` verdicts as conclusive, because agent state describes the live pane while a scrollback capture can retain busy strings quoted by the supervisor itself.
+Only an `unknown` native verdict falls back to the shared regex-over-capture reader.
+This is intentionally narrower than the per-task stale-pane check `bin/fm-supervise-daemon.sh`'s `stale_window_is_busy`, which keeps its existing corroboration policy; composer/pending detection and verified submit route through `fm_backend_herdr_composer_state`/`fm_backend_herdr_send_text_submit`.
 The wedge alarm's supervisor-client status-line flash (`tmux display-message ...`) is tmux-only cosmetic UI with no herdr equivalent, so it is skipped for non-tmux backends.
 A max-defer wedge also attempts the configured backend-independent active alert described in [`wedge-alarm.md`](wedge-alarm.md), while the ERROR log line and durable `state/.subsuper-inject-wedged` marker remain backend-independent.
 
@@ -784,6 +785,35 @@ The luminance rule assumes a dark terminal theme (the fleet reality); the SGR-2 
 
 **Resolved: backend-independent wedge alarm.** The max-defer wedge alarm (`inject_wedge_alarm`, `bin/fm-supervise-daemon.sh`) formerly alarmed into the void because its only active signal was a tmux client status-line flash, skipped for herdr, leaving only the passive `state/.subsuper-inject-wedged` marker.
 It now also attempts a configurable active alert independent of the supervisor backend; [`wedge-alarm.md`](wedge-alarm.md) owns its channels and verification evidence.
+
+## Incident (2026-07-15): historical busy text wedged Herdr away-mode delivery
+
+During extended away-mode stretches, the primary home's read-only `state/.supervise-daemon.log` recorded repeated `inject deferred: supervisor pane busy (agent mid-turn)` lines and max-defer alarms, including `away-mode escalation undelivered 31726s` on 2026-07-14.
+The same log later recorded a 301s wedge on 2026-07-15 while the buffer and wake queue remained preserved.
+
+**Root cause.** `pane_is_busy` asked Herdr's native `agent.get` state first, but treated native `idle` as non-conclusive and then searched a 40-line scrollback tail for the busy regex.
+The supervisor regularly prints peeked crew output and diagnostic log text, so a historical `esc to interrupt` in that scrollback made an idle primary permanently appear mid-turn.
+The independent tmux submission failure had the same delivery symptom: Claude renders an empty composer as `❯` followed by U+00A0 NO-BREAK SPACE, while POSIX `[:space:]` does not trim U+00A0, so a cleared composer was misread as pending after Enter.
+
+**Fix.** The Herdr supervisor guard now trusts a legible native `idle` verdict just as it already trusts `busy`, and uses the scrollback regex only for `unknown` native state.
+The required confirmed-empty composer guard remains after that decision, so native idle never authorizes injection over real draft text or a dead-shell prompt.
+`bin/fm-composer-lib.sh` now owns U+00A0-aware edge trimming, which every composer classifier reaches through `fm_composer_classify_content` without discarding U+00A0 inside real text.
+
+**Verification (2026-07-15, herdr 0.7.3, GNU bash 5.2.21 on Linux).**
+No Herdr session, workspace, or pane lifecycle command ran for this verification.
+
+```text
+$ herdr --version
+herdr 0.7.3
+
+$ bash tests/fm-composer-lib.test.sh && bash tests/fm-daemon.test.sh
+ok - fm_composer_classify_content: Claude's U+00A0 prompt spacer is empty without discarding real text
+ok - fm_tmux_composer_state: bordered, bare agent, and Claude U+00A0 prompt rows read empty
+ok - pane_is_busy: Herdr native idle ignores historical busy signatures in scrollback
+ok - Herdr native idle delivers the buffered digest at max-defer despite historical busy text
+```
+
+The last deterministic simulation sets an escalation age above `FM_MAX_DEFER_SECS=60`, supplies native `idle`, a confirmed-empty composer, and historical `esc to interrupt` scrollback text, then confirms the digest submits and clears the buffer without a wedge marker.
 
 ## Native `pane.agent_status_changed` push escalation (immediate blocked wake)
 
