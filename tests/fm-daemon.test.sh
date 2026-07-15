@@ -846,7 +846,11 @@ test_tmux_composer_state_bordered_and_agent_rows_are_empty() {
   out=$(PATH="$fakebin:$PATH" FM_FAKE_TMUX_CAPTURE="$capture" FM_FAKE_TMUX_CURSOR_Y=0 \
     fm_tmux_composer_state "fakepane")
   [ "$out" = empty ] || fail "a bare codex '›' composer should read empty, got '$out'"
-  pass "fm_tmux_composer_state: a bordered composer box and bare agent glyphs (❯/›) still read empty"
+  printf '❯\302\240\n' > "$capture"
+  out=$(PATH="$fakebin:$PATH" FM_FAKE_TMUX_CAPTURE="$capture" FM_FAKE_TMUX_CURSOR_Y=0 \
+    fm_tmux_composer_state "fakepane")
+  [ "$out" = empty ] || fail "a Claude '❯' plus U+00A0 composer should read empty, got '$out'"
+  pass "fm_tmux_composer_state: bordered, bare agent, and Claude U+00A0 prompt rows read empty"
 }
 
 test_tmux_composer_state_requires_matching_box_borders() {
@@ -1524,13 +1528,15 @@ test_pane_is_busy_herdr_falls_back_to_capture_regex() {
   pass "pane_is_busy: herdr falls back to the shared regex-over-capture reader when native busy_state is unknown"
 }
 
-test_pane_is_busy_herdr_idle_falls_back_to_capture_regex() {
+test_pane_is_busy_herdr_idle_ignores_scrollback_busy_text() {
   (
     fm_backend_busy_state() { printf 'idle'; }
-    fm_backend_capture() { [ "$1" = herdr ] && [ "$2" = "default:w1:p2" ] || fail "unexpected capture args: $1 $2"; printf 'esc to interrupt\n'; }
-    pane_is_busy "default:w1:p2" herdr || fail "pane_is_busy should fall back to the regex-over-capture reader when busy_state is idle"
-  ) || fail "herdr idle capture-fallback pane_is_busy subshell failed"
-  pass "pane_is_busy: herdr corroborates native idle with the shared regex-over-capture reader"
+    fm_backend_capture() { printf 'quoted crew pane: esc to interrupt\n'; }
+    if pane_is_busy "default:w1:p2" herdr; then
+      fail "pane_is_busy must trust Herdr native idle over historical busy text"
+    fi
+  ) || fail "herdr native-idle pane_is_busy subshell failed"
+  pass "pane_is_busy: Herdr native idle ignores historical busy signatures in scrollback"
 }
 
 test_pane_is_busy_defaults_to_tmux_when_backend_omitted() {
@@ -1628,6 +1634,29 @@ test_inject_msg_herdr_submits_through_backend_dispatch() {
       || fail "inject_msg should succeed when send_text_submit confirms empty"
   ) || fail "herdr successful-submit inject_msg subshell failed"
   pass "inject_msg: dispatches busy-guard/composer-guard/submit through the herdr backend and succeeds on a confirmed empty composer"
+}
+
+test_herdr_idle_scrollback_delivers_at_max_defer() {
+  local dir state sent
+  dir=$(make_supercase herdr-idle-max-defer)
+  state="$dir/state"; sent="$dir/sent.log"; : > "$sent"
+  escalate_add "$state" "done: PR https://example.test/pr/400"
+  echo $(( $(date +%s) - 61 )) > "$state/.subsuper-escalations.since"
+  afk_enter "$state"
+  (
+    fm_backend_target_exists() { return 0; }
+    fm_backend_busy_state() { printf 'idle'; }
+    fm_backend_capture() { printf 'quoted crew pane: esc to interrupt\n'; }
+    fm_backend_composer_state() { printf 'empty'; }
+    fm_backend_send_text_submit() { printf '%s\n' "$3" > "$sent"; printf 'empty'; }
+    FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET="default:w1:p2" \
+      FM_ESCALATE_BATCH_SECS=99999 FM_MAX_DEFER_SECS=60 housekeeping "$state"
+  ) || fail "native-idle Herdr max-defer delivery did not complete"
+  [ ! -s "$state/.subsuper-escalations" ] || fail "native-idle Herdr delivery left the escalation buffered past max-defer"
+  [ ! -e "$state/.subsuper-inject-wedged" ] || fail "native-idle Herdr delivery raised a wedge marker"
+  grep -F "Supervisor escalate (1 event(s))" "$sent" >/dev/null \
+    || fail "native-idle Herdr max-defer delivery did not submit the digest"
+  pass "Herdr native idle delivers the buffered digest at max-defer despite historical busy text"
 }
 
 # Safety-critical (task fm-composer-shellglyph-safety): the away-mode injector
@@ -1740,11 +1769,12 @@ test_discover_supervisor_backend_precedence
 test_discover_supervisor_target_herdr
 test_pane_is_busy_herdr_native_busy_state
 test_pane_is_busy_herdr_falls_back_to_capture_regex
-test_pane_is_busy_herdr_idle_falls_back_to_capture_regex
+test_pane_is_busy_herdr_idle_ignores_scrollback_busy_text
 test_pane_is_busy_defaults_to_tmux_when_backend_omitted
 test_pane_input_pending_herdr_dispatch
 test_inject_msg_herdr_busy_guard_defers
 test_inject_msg_herdr_composer_guard_defers
 test_inject_msg_herdr_pane_gone_defers
 test_inject_msg_herdr_submits_through_backend_dispatch
+test_herdr_idle_scrollback_delivers_at_max_defer
 test_inject_msg_defers_on_dead_shell_unknown

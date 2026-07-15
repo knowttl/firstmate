@@ -159,6 +159,29 @@ fm_composer_strip_ghost() {
   '
 }
 
+# fm_composer_trim: trim ordinary whitespace plus the U+00A0 no-break-space
+# that Claude renders after an otherwise-empty prompt glyph. POSIX [:space:]
+# does not include U+00A0, so it must be handled explicitly without treating a
+# no-break space inside real typed text as disposable.
+fm_composer_trim() {  # <content>
+  local content=$1 nbsp=$'\302\240'
+  while :; do
+    case "$content" in
+      "$nbsp"*) content=${content#"$nbsp"} ;;
+      [[:space:]]*) content="${content#"${content%%[![:space:]]*}"}" ;;
+      *) break ;;
+    esac
+  done
+  while :; do
+    case "$content" in
+      *"$nbsp") content=${content%"$nbsp"} ;;
+      *[[:space:]]) content="${content%"${content##*[![:space:]]}"}" ;;
+      *) break ;;
+    esac
+  done
+  printf '%s' "$content"
+}
+
 # fm_composer_classify_content: the single shared composer-content verdict.
 #   <bordered> 1 when <content> came from a genuine agent-composer container (a
 #              bordered composer box, or a structurally-identified bare AGENT
@@ -182,6 +205,8 @@ fm_composer_idle_matches() {
 fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [plain_content]
   local bordered=$1 content=$2 idle_re=${3:-} idle_case=${4:-sensitive} plain_content
   plain_content=${5:-$content}
+  content=$(fm_composer_trim "$content")
+  plain_content=$(fm_composer_trim "$plain_content")
   if [ "$bordered" != 1 ] && [ -z "$content" ] && [ -n "$plain_content" ]; then
     case "$plain_content" in
       '❯'|'›') printf 'empty'; return 0 ;;
@@ -210,8 +235,7 @@ fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [
     '❯ '*|'› '*|'> '*|'$ '*|'% '*|'# '*) content=${content#??} ;;
     '❯'*|'›'*|'>'*|'$'*|'%'*|'#'*) content=${content#?} ;;
   esac
-  content="${content#"${content%%[![:space:]]*}"}"
-  content="${content%"${content##*[![:space:]]}"}"
+  content=$(fm_composer_trim "$content")
   [ -n "$content" ] || { printf 'empty'; return 0; }
   # Known idle placeholder (matched again after the leading glyph was stripped,
   # e.g. "❯ Type a message...").

@@ -82,6 +82,15 @@ test_agent_glyphs_are_empty_bordered_and_bare() {
   pass "fm_composer_classify_content: agent prompt glyphs (❯ claude, › codex) read empty bordered or bare"
 }
 
+test_claude_nbsp_prompt_spacer_is_empty() {
+  local out
+  out=$(classify 0 $'❯\302\240')
+  [ "$out" = empty ] || fail "a Claude prompt followed by U+00A0 must read empty, got '$out'"
+  out=$(classify 0 $'❯\302\240real text')
+  [ "$out" = pending ] || fail "a Claude prompt with real text after U+00A0 must stay pending, got '$out'"
+  pass "fm_composer_classify_content: Claude's U+00A0 prompt spacer is empty without discarding real text"
+}
+
 # --- Empty content and idle placeholder -------------------------------------
 
 test_empty_content_is_empty() {
@@ -130,6 +139,7 @@ test_stripped_unbordered_content_uses_plain_content
 test_bare_shell_prompt_with_command_is_not_empty
 test_bordered_shell_glyph_is_empty
 test_agent_glyphs_are_empty_bordered_and_bare
+test_claude_nbsp_prompt_spacer_is_empty
 test_empty_content_is_empty
 test_idle_placeholder_is_empty
 test_idle_placeholder_case_mode_is_explicit
