@@ -117,8 +117,8 @@ now_ms() {
 # unclassified so new tests are still runnable and visible in summaries.
 family_for_basename() {
   case "$1" in
-    fm-arm-pretool-check.test.sh|fm-brief.test.sh|fm-calm-pi-extension.test.sh|\
-    fm-captain-translation-contract.test.sh|fm-cd-pretool-check.test.sh|\
+    fm-arm-pretool-check.test.sh|fm-ask-user-authority.test.sh|fm-brief.test.sh|\
+    fm-calm-pi-extension.test.sh|fm-captain-translation-contract.test.sh|fm-cd-pretool-check.test.sh|\
     fm-composer-ghost.test.sh|fm-composer-lib.test.sh|\
     fm-continuity-pretool-check.test.sh|fm-crew-state.test.sh|fm-decision-hold-lifecycle.test.sh|\
     fm-dispatch-select.test.sh|fm-ensure-agents-md.test.sh|fm-grok-harness.test.sh|\
@@ -1297,10 +1297,14 @@ else
   }
 
   worker_pid_is_running() {
-    local want=$1 running
+    local want=$1 running inventory="$RUN_TMP/running-pids"
+    # Keep `jobs` in this shell. A process substitution runs it in a subshell
+    # without this shell's job table on Bash 3.2/5.x, falsely reporting every
+    # worker complete and making the scheduler wait for the oldest PID.
+    jobs -r -p >"$inventory"
     while IFS= read -r running; do
       [ "$running" = "$want" ] && return 0
-    done < <(jobs -r -p)
+    done <"$inventory"
     return 1
   }
 
