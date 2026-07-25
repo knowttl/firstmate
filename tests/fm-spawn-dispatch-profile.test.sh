@@ -123,6 +123,56 @@ test_no_profile_keeps_claude_profile_defaults() {
   pass "no --model/--effort records defaults and types the claude launch instructions"
 }
 
+# The crew decision-channel deny, in the per-worktree settings fm-spawn already
+# writes for the turn-end hook.
+#
+# Both denied tools resolve LOCALLY while presenting as escalation: a crew that calls
+# one takes an answer from whoever is watching its pane and can then record a captain
+# decision nobody above it made. AskUserQuestion is the direct channel; EnterPlanMode
+# is the indirect one, because plan mode reaches a human approval prompt through
+# ExitPlanMode. Entry is denied rather than exit so a crew can never be trapped in
+# plan mode. Verified on Claude Code 2.1.220 that permissions.deny still removes a
+# tool from the schema under --dangerously-skip-permissions, which the launch
+# assertion above shows every crew carries; see harness-adapters for the evidence.
+#
+# The settings file must stay untracked and worktree-local, so the git-exclude entry
+# is asserted too: a tracked deny would propagate where firstmate never put it.
+test_claude_crew_denies_the_local_question_channel() {
+  local rec id out status settings
+  id=profile-deny-z1
+  rec=$(make_spawn_case profile-deny claude "$id")
+  read_case_record "$rec"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "claude spawn should succeed"
+
+  settings="$WT_DIR/.claude/settings.local.json"
+  assert_present "$settings" "fm-spawn did not write the crew's local claude settings"
+  if command -v jq >/dev/null 2>&1; then
+    jq -e '.permissions.deny | index("AskUserQuestion")' "$settings" >/dev/null \
+      || fail "AskUserQuestion is not denied in the crew's local claude settings"
+    jq -e '.permissions.deny | index("EnterPlanMode")' "$settings" >/dev/null \
+      || fail "EnterPlanMode is not denied, leaving the plan-approval prompt reachable"
+    # Exit must stay available: denying it could trap a crew inside plan mode.
+    jq -e '.permissions.deny | index("ExitPlanMode") | not' "$settings" >/dev/null \
+      || fail "ExitPlanMode was denied, which can trap a crew in plan mode"
+    # The turn-end hook must survive alongside the deny: losing it would blind
+    # supervision, which is a worse failure than the one the deny prevents.
+    jq -e '.hooks.Stop[0].hooks[0].command | test("turn-ended")' "$settings" >/dev/null \
+      || fail "the turn-end Stop hook was lost when the deny was added"
+  else
+    assert_grep 'AskUserQuestion' "$settings" "AskUserQuestion is not denied"
+    assert_grep 'EnterPlanMode' "$settings" "EnterPlanMode is not denied"
+    assert_grep 'turn-ended' "$settings" "the turn-end Stop hook was lost"
+  fi
+
+  assert_grep '.claude/settings.local.json' \
+    "$(git -C "$WT_DIR" rev-parse --git-path info/exclude)" \
+    "the crew settings file was not git-excluded, so the deny could be committed"
+  pass "a claude crew worktree denies the local question channel and keeps its turn-end hook"
+}
+
 test_active_dispatch_profile_requires_explicit_harness_for_ship() {
   local rec id out status
   id=profile-required-ship-z11
@@ -423,6 +473,7 @@ test_active_dispatch_profile_does_not_block_secondmate_launch() {
 }
 
 test_no_profile_keeps_claude_profile_defaults
+test_claude_crew_denies_the_local_question_channel
 test_active_dispatch_profile_requires_explicit_harness_for_ship
 test_active_dispatch_profile_requires_explicit_harness_for_scout
 test_active_dispatch_profile_allows_explicit_harness

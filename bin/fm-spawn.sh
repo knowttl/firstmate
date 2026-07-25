@@ -1199,9 +1199,40 @@ exclude_path() {
 if [ "$KIND" != secondmate ]; then
   case "$HARNESS" in
     claude*)
+      # Turn-end signal, plus the crew decision-channel deny.
+      #
+      # Both denied tools RESOLVE LOCALLY while presenting as escalation: a crew that
+      # calls one takes an answer from whoever is watching its pane and can then
+      # record a captain decision that nobody above it made (bin/fm-brief.sh's rule 6
+      # continuation carries the incident). A crewmate never addresses the captain
+      # (AGENTS.md section 1), so neither has a legitimate use in a crew pane, and
+      # denying them removes the channels outright instead of relying on the crew to
+      # refuse a tool it has already reached for.
+      #
+      # AskUserQuestion is the direct channel. EnterPlanMode is the indirect one: a
+      # crew that enters plan mode reaches a plan-approval prompt through
+      # ExitPlanMode, which is the same manufactured human answer wearing a different
+      # shape. ENTRY is denied rather than exit, because denying exit could trap a
+      # crew that somehow started in plan mode with no way back to editing. Verified
+      # that ExitPlanMode simply errors ("You are not in plan mode") when entry never
+      # happened, so it renders no prompt and needs no deny of its own.
+      #
+      # Deny is used rather than a PreToolUse hook because it removes the tool from
+      # the model's schema, so the crew is never offered the option and cannot
+      # improvise around a refusal. Verified on Claude Code 2.1.220 that deny still
+      # binds under --dangerously-skip-permissions, which every crew launches with,
+      # and that the Stop hook below still fires alongside it:
+      # see .agents/skills/harness-adapters for the evidence.
+      #
+      # The limit is enumeration - a future differently-named question tool would not
+      # be listed here. Rule 6's instruction is the harness-agnostic layer that still
+      # covers that case, and every non-claude harness.
+      #
+      # Local, per-worktree, and git-excluded below, never tracked project settings:
+      # the deny is claude-only and must not propagate anywhere firstmate did not put it.
       mkdir -p "$WT/.claude"
       cat > "$WT/.claude/settings.local.json" <<EOF
-{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"touch '$TURNEND'"}]}]}}
+{"permissions":{"deny":["AskUserQuestion","EnterPlanMode"]},"hooks":{"Stop":[{"hooks":[{"type":"command","command":"touch '$TURNEND'"}]}]}}
 EOF
       exclude_path '.claude/settings.local.json'
       ;;

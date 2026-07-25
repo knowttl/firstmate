@@ -930,6 +930,60 @@ test_no_run_idle_pane_custom_paused_verb() {
   pass "no run + idle pane honors the configured paused verb"
 }
 
+# A crew that prefixes its own status lines with a timestamp and its task id used to
+# vanish from the reader entirely: the timestamp's colons split first, the verb parsed
+# as "2026-07-25T06", and a correctly declared pause surfaced here as
+# "unknown · none · no current-state source available". The watcher could then never
+# absorb it, so it re-escalated a wedge alarm every poll against a healthy crew, and
+# the verdict actively pointed the diagnosis at the crew instead of at the line.
+test_no_run_idle_pane_prefixed_paused() {
+  reset_fakes
+  local d; d=$(new_case prefixed-paused)
+  make_repo_on_branch "$d/wt" fm/feat-prefixed-pause
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-prefixed-pause.meta" \
+    "window=fm:fm-feat-prefixed-pause" "worktree=$d/wt" "kind=ship"
+  printf '2026-07-25T06:41:14Z feat-prefixed-pause: paused: staffing the artifact\n' \
+    > "$d/state/feat-prefixed-pause.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_BUSY=0
+  local out; out=$(run_crew_state "$d" feat-prefixed-pause)
+  assert_contains "$out" "state: paused" "prefixed pause -> paused"
+  assert_contains "$out" "source: status-log" "prefixed pause -> status-log source"
+  assert_contains "$out" "staffing the artifact" "prefixed pause carries only its reason as the detail"
+  assert_not_contains "$out" "2026-07-25T06" "the prefix leaked into the detail"
+  pass "a timestamp+id prefixed pause reads as a declared pause, not an unknown state"
+}
+
+# The loud half. A shape the normalizer cannot recover must NAME itself here, because
+# this verdict is exactly where the diagnosis was inverted: a stateless
+# "no current-state source available" reads as a healthy crew with nothing to say,
+# while quoting the line points straight at the real fault. The state stays unknown,
+# so no absorb or wedge decision changes - only the detail a supervisor reads.
+test_no_run_idle_pane_unparseable_status_line() {
+  reset_fakes
+  local d; d=$(new_case unparseable-status)
+  make_repo_on_branch "$d/wt" fm/feat-unparseable
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-unparseable.meta" \
+    "window=fm:fm-feat-unparseable" "worktree=$d/wt" "kind=ship"
+  printf '[2026-07-25] paused: waiting on the vendor\n' > "$d/state/feat-unparseable.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_BUSY=0
+  local out; out=$(run_crew_state "$d" feat-unparseable)
+  assert_contains "$out" "state: unknown" "an unreadable line is still an unknown state"
+  assert_contains "$out" "source: status-log" "the unreadable line is named as the source"
+  assert_contains "$out" "unreadable status line" "the malformed line is not reported silently"
+  assert_contains "$out" "[2026-07-25] paused: waiting on the vendor" "the offending line is quoted"
+
+  # A crew with no status verb at all is a supported input, not a malformed line, so
+  # it must keep the stateless verdict rather than gain a false alarm.
+  printf 'merged\n' > "$d/state/feat-unparseable.status"
+  out=$(run_crew_state "$d" feat-unparseable)
+  assert_contains "$out" "no current-state source available" "verbless legacy line falsely flagged"
+  pass "an unparseable state declaration announces itself; a verbless line stays stateless"
+}
+
 # A trailing keyed resolved: event is a decision-CLOSING event, not a run-state
 # verb. It must never become the current state or leak its resolution prose as the
 # detail: a healthy idle secondmate that just closed a keyed decision falls through
@@ -1264,6 +1318,8 @@ test_no_run_idle_pane_uses_log
 test_no_run_idle_pane_uses_keyed_log
 test_no_run_idle_pane_paused
 test_no_run_idle_pane_custom_paused_verb
+test_no_run_idle_pane_prefixed_paused
+test_no_run_idle_pane_unparseable_status_line
 test_no_run_idle_secondmate_resolved_event_not_state
 test_dead_window_ignores_stale_status_log
 test_dead_window_still_reports_terminal_run_step

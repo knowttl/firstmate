@@ -46,6 +46,12 @@
 #   5. Missing meta or torn-down worktree: report unknown · none. If no run is
 #      attributed to this crew, a dead endpoint also reports unknown · none rather
 #      than trusting a stale status log.
+#   6. Last resort, before the stateless `unknown · none`: if the log's last line
+#      was plainly TRYING to declare a state but no verb could be parsed from it,
+#      say so and quote the line (unknown · status-log). The state is still unknown,
+#      so no absorb decision changes; what changes is that a mis-formatted
+#      declaration names itself here instead of presenting as a healthy crew with no
+#      state at all, which is how a crew's own correct pause once read as a wedge.
 #
 # Read-only and side-effect free. Always exits 0 on a successful read regardless
 # of state; exit 2 only on a usage error (no id).
@@ -624,6 +630,16 @@ if [ -n "$LOG_VERB" ]; then
   if [ "$LOG_STATE" != unknown ]; then
     emit "$LOG_STATE" status-log "$(status_line_note "$LOG_LINE")"
   fi
+fi
+
+# A mis-formatted state declaration announces itself rather than degrading into the
+# stateless verdict below. fm-classify-lib.sh's status_line_is_malformed_state owns
+# the test, and it stays deliberately quiet on a legitimate verbless line, so this
+# fires only when the crew wrote a state verb somewhere the parsers cannot read it.
+# The state remains unknown, so no absorb or wedge decision is changed by this
+# branch - only the detail a supervisor reads when it comes to inspect.
+if status_line_is_malformed_state "$LOG_LINE"; then
+  emit unknown status-log "unreadable status line, the state verb must start the line: $LOG_LINE"
 fi
 
 emit unknown none "no current-state source available"

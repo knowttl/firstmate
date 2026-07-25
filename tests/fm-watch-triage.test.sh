@@ -248,6 +248,78 @@ test_status_is_paused_classifier() {
   pass "status_is_paused: only the leading paused verb matches, and paused is not captain-relevant"
 }
 
+# Prefixed status lines. A crew that timestamps or labels its own status lines used
+# to disappear from EVERY classifier at once, because the parsers split on the first
+# colon and a timestamp brings its own: "2026-07-25T06:41:14Z <id>: paused: <reason>"
+# parsed to the verb "2026-07-25T06". The declared pause became invisible,
+# fm-crew-state.sh reported `unknown none`, the watcher could not absorb it, and the
+# wedge alarm re-escalated every poll against a crew that was behaving correctly.
+#
+# Two halves are asserted here: a prefixed line now parses identically to its bare
+# equivalent, and a line whose verb cannot be recovered says so instead of going
+# silent. The already-valid bare lines above must keep classifying exactly as before,
+# which test_status_is_paused_classifier and the keyed-decision test already pin.
+test_prefixed_status_lines_classified() {
+  local prefixed='2026-07-25T06:41:14Z nx-broker-review-session-s1: paused: staffing the artifact'
+
+  # The reported shape: recovered, and identical to the bare line's parse.
+  status_is_paused "$prefixed" || fail "timestamp+id prefixed pause not recognized"
+  [ "$(status_line_verb "$prefixed")" = paused ] \
+    || fail "prefixed verb parsed as '$(status_line_verb "$prefixed")', not paused"
+  [ "$(status_line_note "$prefixed")" = 'staffing the artifact' ] \
+    || fail "prefixed note parsed as '$(status_line_note "$prefixed")'"
+  status_is_captain_relevant "$prefixed" && fail "prefixed pause became captain-relevant"
+
+  # A bare id prefix with no timestamp, and a terminal verb, which must SURFACE.
+  status_is_paused 'nx-broker: paused: staffing' || fail "id-prefixed pause not recognized"
+  status_is_terminal_verb '2026-07-25T06:41:14Z nx: blocked: needs a credential' \
+    || fail "prefixed blocked not recognized as a terminal captain verb"
+  status_is_captain_relevant '2026-07-25T06:41:14Z nx: done: PR raised' \
+    || fail "prefixed done not captain-relevant"
+
+  # A keyed decision survives a prefix, so the durable open-set still folds it.
+  [ "$(_fm_decision_key '2026-07-25T06:41:14Z nx: needs-decision [key=api]: shape?')" = api ] \
+    || fail "prefixed decision key lost"
+
+  # The note must survive its own colons intact, prefixed or not: firstmate relays the
+  # full PR URL from here, and a port colon must not truncate it either.
+  [ "$(status_line_note '2026-07-25T06:41:14Z nx: done: PR https://github.com/o/r/pull/9 checks green')" \
+     = 'PR https://github.com/o/r/pull/9 checks green' ] \
+    || fail "a PR URL was truncated out of a prefixed note"
+  [ "$(status_line_note '2026-07-25T06:41:14Z nx: blocked: credential for https://x.io:8443/api')" \
+     = 'credential for https://x.io:8443/api' ] \
+    || fail "a port colon truncated a prefixed note"
+
+  # Recovery requires a later field to be EXACTLY a verb, so ordinary prose that
+  # merely ENDS in a verb word is left alone rather than reinterpreted.
+  [ "$(status_line_verb 'note: the crew is done: yes')" = note ] \
+    || fail "prose ending in a verb word was reinterpreted as that verb"
+
+  # An already-valid line is returned untouched: its note keeps a verb-shaped
+  # substring that a second normalization pass would have eaten.
+  [ "$(status_line_note 'working: renamed paused: to pause')" = 'renamed paused: to pause' ] \
+    || fail "valid line's note was altered by normalization"
+
+  # Verbless legacy lines stay verbless and stay quiet.
+  status_line_is_malformed_state 'merged' && fail "legacy free-text 'merged' flagged malformed"
+  status_line_is_malformed_state 'PR ready' && fail "legacy free-text 'PR ready' flagged malformed"
+  status_line_is_malformed_state '' && fail "empty line flagged malformed"
+  status_line_is_malformed_state "$prefixed" && fail "a recovered line still flagged malformed"
+  status_line_is_malformed_state 'paused: staffing' && fail "a valid line flagged malformed"
+
+  # An unrecoverable shape is the loud case: the verb is present but not parseable.
+  status_line_is_malformed_state '[2026-07-25] paused: waiting' \
+    || fail "bracketed-prefix pause not flagged malformed"
+
+  # An override verb is recognized by the normalizer too, so a home with a custom
+  # vocabulary does not silently lose prefix recovery.
+  ( export FM_CLASSIFY_PAUSED_VERB=holding
+    [ "$(status_line_verb '2026-07-25T06:41:14Z nx: holding: upstream')" = holding ] ) \
+    || fail "overridden pause verb not recovered from a prefixed line"
+
+  pass "prefixed status lines parse as their bare equivalents; unrecoverable ones are flagged, verbless ones are not"
+}
+
 # crew_absorb_class: the single fm-crew-state.sh read that returns BOTH absorb
 # reasons - working (active run/busy pane), paused (declared external wait), or none
 # (surface it) - so the watcher's stale path gets both for one bounded call.
@@ -1276,6 +1348,7 @@ test_scan_captain_relevant_statuses_classifier
 test_classifier_primitives
 test_crew_is_provably_working_classifier
 test_status_is_paused_classifier
+test_prefixed_status_lines_classified
 test_crew_absorb_class_classifier
 test_signal_crew_provably_working_classifier
 test_provably_working_signal_absorbed

@@ -362,6 +362,67 @@ test_scout_and_secondmate_load_decision_hold_policy() {
   pass "fm-brief.sh: investigation and visual-review completions load the shared decision policy"
 }
 
+# The decision-channel contract, on every dispatched-crew scaffold.
+#
+# A crew once escalated correctly in intent and still manufactured a captain
+# decision: it announced it was relaying two ask-user findings verbatim, then called
+# its own harness question tool, accepted the answer that came back from whoever was
+# watching its pane, and wrote "the captain reviewed both findings and authorized
+# fixing both" into three durable records. Nothing reached firstmate or the captain.
+# Both halves have to be in the scaffold - forbid the local channel, and pin who a
+# relayed decision belongs to - because the tool LOOKS like escalation.
+test_decision_channel_and_devstack_rules() {
+  local home ship scout b
+  home="$TMP_ROOT/decision-channel-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" dc-ship alpha >/dev/null 2>&1 \
+    || fail "ship scaffold exited non-zero"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" dc-scout alpha --scout >/dev/null 2>&1 \
+    || fail "scout scaffold exited non-zero"
+  ship="$home/data/dc-ship/brief.md"
+  scout="$home/data/dc-scout/brief.md"
+
+  for b in "$ship" "$scout"; do
+    assert_grep "status file is the ONLY way a decision request leaves you" "$b" \
+      "$b did not name the status file as the sole decision-request channel"
+    assert_grep "Never use the question or ask-the-user tool built into your own harness" "$b" \
+      "$b did not forbid the question tool built into the harness"
+    assert_grep "resolves locally" "$b" \
+      "$b did not explain why the question tool is not escalation"
+    assert_grep "belongs to FIRSTMATE unless the reply explicitly says the captain made it" "$b" \
+      "$b did not state the decision-attribution rule"
+    assert_grep 'never upgrade a relayed decision into a captain decision' "$b" \
+      "$b did not forbid restating a relayed decision as a captain decision"
+    # Rule 8 - the queued dev-stack teardown item, folded in as scaffold text.
+    assert_grep 'stop it before you report done' "$b" \
+      "$b did not require stopping a dev stack before reporting done"
+    assert_grep 'remove the images and build cache' "$b" \
+      "$b did not require reclaiming dev-stack images and build cache"
+    assert_grep 'keep it up for a visual review' "$b" \
+      "$b dropped the visual-review carve-out for a running stack"
+    # The additions must not disturb the numbered rule list they join.
+    assert_grep '7. Never stop, restart, or update the shared' "$b" \
+      "$b lost or renumbered the no-mistakes daemon rule"
+    assert_grep '8. If you start a dev stack' "$b" \
+      "$b did not number the dev-stack rule 8"
+  done
+
+  # Both blocks are built by a heredoc nested in $( ), and bash 3.2 - the only
+  # /bin/bash on stock macOS - mis-parses a raw apostrophe there and then fails to
+  # parse fm-brief.sh at all (issue #1017). Pin the rendered text apostrophe-free so
+  # a later reword cannot reintroduce that break on a whole platform.
+  local rules
+  rules=$(sed -n '/^   The status file is the ONLY way/,/^   Record it that way/p;/^8\. If you start a dev stack/,/visual review\.$/p' "$ship")
+  [ -n "$rules" ] || fail "could not isolate the new rule text for the apostrophe check"
+  case "$rules" in
+    *"'"*) fail "the decision-channel or dev-stack rule text contains an apostrophe (breaks bash 3.2, issue #1017)" ;;
+  esac
+  pass "fm-brief.sh: the new rule text stays apostrophe-free for bash 3.2"
+  pass "fm-brief.sh: every dispatched-crew scaffold carries the decision-channel, attribution, and dev-stack rules"
+}
+
 # Scout and secondmate paths still scaffold well-formed briefs.
 test_scout_and_secondmate_scaffold() {
   local brief
@@ -396,4 +457,5 @@ test_secondmate_no_projects_charter
 test_secondmate_marked_request_reporting_contract
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
+test_decision_channel_and_devstack_rules
 test_scout_and_secondmate_scaffold

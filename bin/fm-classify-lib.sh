@@ -13,6 +13,12 @@
 # daemon keeps its escalation-digest seen-markers; the watcher keeps its .seen-*
 # signatures).
 #
+# The line parsers are pure in that sense but not literally global-free: the two
+# internal helpers they share (_fm_verb_word, _fm_status_strip_prefix) return
+# through _FM_VERB_WORD and _FM_STATUS_LINE instead of printing, to keep a per-line
+# fold from paying a subshell per colon-delimited field. Both are scratch registers
+# owned entirely by this lib; no consumer reads them.
+#
 # The one exception is the absorb classification (crew_absorb_class and its
 # working/paused wrappers). It is NOT a pure status-file read: it reuses
 # bin/fm-crew-state.sh, which may make a bounded no-mistakes call, to decide
@@ -72,6 +78,115 @@ FM_PAUSE_RESURFACE_SECS_DEFAULT=3600
 # fm-decision-hold.sh has verified the corresponding captain-held backlog item.
 FM_CLASSIFY_RESOLVE_VERB_DEFAULT='resolved'
 FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT='captain-held'
+
+# The state verbs the line parsers RECOGNIZE, minus the three configurable ones
+# defined above (which _fm_is_state_verb folds in at call time). This is a
+# RECOGNITION set - "is this word a state verb at all" - and is deliberately a
+# different question from the classification sets above, which decide which verbs
+# are terminal, captain-relevant, or phase-opening. Only the prefix normalizer and
+# the malformed-line diagnostic below consult it; no classifier reads it, so it
+# cannot become a second opinion on what a verb MEANS. FM_CLASSIFY_VERBS overrides.
+FM_CLASSIFY_VERBS_DEFAULT='working done failed needs-decision blocked'
+
+# 0 if <word> is a recognized state verb. The single owner of that test.
+# Membership is a padded-substring match rather than a loop over a split list, so it
+# needs no word splitting (which a non-bash shell sourcing this lib would not do) and
+# no subshell, and the quoted "$w" keeps the match literal for any input.
+_fm_is_state_verb() {  # <word>
+  local w=$1 list
+  [ -n "$w" ] || return 1
+  list=" ${FM_CLASSIFY_VERBS:-$FM_CLASSIFY_VERBS_DEFAULT}"
+  list="$list ${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}"
+  list="$list ${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}"
+  list="$list ${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT} "
+  case "$list" in *" $w "*) return 0 ;; esac
+  return 1
+}
+
+# Trim one colon-delimited field down to its bare verb word, dropping any
+# "[key=<slug>]" token. Shared by the three line parsers and the normalizer so the
+# verb word is recovered identically everywhere.
+#
+# Both this and _fm_status_strip_prefix RETURN THROUGH A VARIABLE rather than
+# printing. The watcher folds whole status streams line by line, so a printing
+# helper would add a subshell per colon-delimited field per parser call; assigning
+# keeps the parsers exactly as cheap as the single-expansion versions they replace.
+# Callers must read the result immediately, before the next call overwrites it.
+_FM_VERB_WORD=""
+_FM_STATUS_LINE=""
+_fm_verb_word() {  # <text-before-a-colon>; result in _FM_VERB_WORD
+  local v=$1
+  v=${v%%\[key=*}
+  v=${v#"${v%%[![:space:]]*}"}
+  _FM_VERB_WORD=${v%"${v##*[![:space:]]}"}
+}
+
+# Normalize a status line so it BEGINS at its state verb, by dropping a leading
+# prefix that a crew's own logging instinct put in front of it. This exists because
+# a prefixed declaration used to parse to a garbage verb and then vanish from every
+# classifier at once: `2026-07-25T06:41:14Z <id>: paused: <reason>` yielded the verb
+# `2026-07-25T06` (the timestamp's own colons split first), so the declared pause
+# was invisible, fm-crew-state.sh reported `unknown none`, the watcher could not
+# absorb it, and the wedge alarm re-escalated every poll while the crew was in fact
+# behaving correctly. Recovering the verb restores the MEANING, which is what the
+# silence destroyed.
+#
+# It cannot change an already-valid line: when the first colon-delimited field is
+# already a recognized verb the line is returned untouched on the first iteration.
+# Recovery requires a later field to be EXACTLY a verb after trimming, never merely
+# to end in one, so ordinary prose ("note: the crew is done: yes") is left alone
+# rather than reinterpreted. A line with no recoverable verb is returned unchanged,
+# which keeps legacy free-text lines ("merged", "PR ready") parsing as they do today.
+_fm_status_strip_prefix() {  # <status-line>; result in _FM_STATUS_LINE
+  local line=$1 rest=$1
+  while :; do
+    case "$rest" in
+      *:*) ;;
+      *) _FM_STATUS_LINE=$line; return 0 ;;
+    esac
+    _fm_verb_word "${rest%%:*}"
+    if _fm_is_state_verb "$_FM_VERB_WORD"; then
+      _FM_STATUS_LINE=$rest
+      return 0
+    fi
+    rest=${rest#*:}
+  done
+}
+
+# 0 if a line was plainly TRYING to declare a state but no verb could be recovered
+# from it - it contains a recognized verb word somewhere, yet does not parse to one.
+# This is the loud half of the fix: normalization above recovers the prefix shapes it
+# can anticipate, and this predicate makes whatever it cannot recover announce itself
+# at the point of diagnosis (bin/fm-crew-state.sh's detail) instead of degrading into
+# a stateless `unknown` that inverts the diagnosis onto a healthy crew.
+#
+# It deliberately does NOT fire on a line with no verb at all: a bare legacy
+# free-text line ("merged", "PR ready") and an ordinary no-verb signal are both
+# supported inputs, so treating every unrecognized line as malformed would be a
+# false-alarm generator. It also never feeds a classifier - an unparseable line is
+# still surfaced rather than absorbed, because a line that cannot be read is not
+# evidence that a crew is healthy.
+status_line_is_malformed_state() {  # <status-line>
+  local line=$1 rest word
+  [ -n "$line" ] || return 1
+  _fm_status_strip_prefix "$line"
+  _fm_verb_word "${_FM_STATUS_LINE%%:*}"
+  if _fm_is_state_verb "$_FM_VERB_WORD"; then
+    return 1
+  fi
+  # Walk the line as whitespace/colon-separated words, without word splitting or
+  # globbing, so a verb buried in an unrecoverable shape is still spotted.
+  rest=${line//:/ }
+  while [ -n "$rest" ]; do
+    word=${rest%% *}
+    rest=${rest#"$word"}
+    rest=${rest#"${rest%%[![:space:]]*}"}
+    if _fm_is_state_verb "$word"; then
+      return 0
+    fi
+  done
+  return 1
+}
 
 # Return the last non-blank line of a status file (empty if missing/blank).
 last_status_line() {
@@ -158,22 +273,27 @@ status_is_paused_or_captain_held() {  # <status-line>
 # A line with no token uses the key "default", preserving the historical
 # one-open-decision-per-task behavior (a bare "resolved:" closes "default").
 # The three parsers are pure reads of a single line; the verb parser strips any
-# key token before the colon so the leading word is recovered cleanly.
+# key token before the colon so the leading word is recovered cleanly. All three
+# read the line through _fm_status_strip_prefix first, so a prefixed declaration
+# yields the same verb, note, and key as its bare equivalent instead of splitting
+# on the prefix's own colons.
 status_line_verb() {  # <status-line> -> leading verb word
-  local v=${1%%:*}
-  v=${v%%\[key=*}
-  v=${v#"${v%%[![:space:]]*}"}
-  v=${v%"${v##*[![:space:]]}"}
-  printf '%s' "$v"
+  _fm_status_strip_prefix "$1"
+  _fm_verb_word "${_FM_STATUS_LINE%%:*}"
+  printf '%s' "$_FM_VERB_WORD"
 }
 status_line_note() {  # <status-line> -> text after the first colon, trimmed
-  case "$1" in
-    *:*) local n=${1#*:}; printf '%s' "${n#"${n%%[![:space:]]*}"}" ;;
-    *) printf '%s' "$1" ;;
+  local n
+  _fm_status_strip_prefix "$1"
+  case "$_FM_STATUS_LINE" in
+    *:*) n=${_FM_STATUS_LINE#*:}; printf '%s' "${n#"${n%%[![:space:]]*}"}" ;;
+    *) printf '%s' "$_FM_STATUS_LINE" ;;
   esac
 }
 _fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
-  local prefix=${1%%:*} k
+  local prefix k
+  _fm_status_strip_prefix "$1"
+  prefix=${_FM_STATUS_LINE%%:*}
   case "$prefix" in
     *\[key=*\]*)
       k=${prefix#*\[key=}

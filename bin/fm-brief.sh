@@ -39,6 +39,14 @@
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known external wait expected to clear on its own,
 # blocked when firstmate must act.
+# Every dispatched-crew scaffold also fixes where a decision may come FROM and who
+# a relayed one belongs to: the status file is the only channel out, the harness's
+# own question tool is forbidden because it resolves locally while looking like
+# escalation, and a decision firstmate relays is firstmate's unless the reply says
+# the captain made it. A crew that answered two gate findings through its own
+# question tool is why this is scaffold text rather than a convention.
+# Dispatched-crew scaffolds also require a dev stack the crew started to be stopped,
+# with its images and build cache reclaimed, before it reports done.
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
@@ -226,6 +234,42 @@ EOF
 )
 fi
 
+# Rule 6 continuation, shared by the scout and ship scaffolds: where a decision may
+# come FROM, and who a relayed decision belongs to.
+#
+# Written because a crewmate did escalate correctly in intent and still manufactured
+# a captain decision: it announced it was relaying two ask-user findings verbatim,
+# then called its own harness question tool, took the answer that came back from
+# whoever was watching its pane, and recorded "the captain reviewed both findings and
+# authorized fixing both" into three durable records. No decision ever reached
+# firstmate or the captain. A harness question tool RESOLVES LOCALLY while looking
+# exactly like escalation, so naming the channel is not enough - the brief has to
+# forbid the tool and name attribution explicitly.
+#
+# Both blocks must stay APOSTROPHE-FREE: bash 3.2, the only /bin/bash on stock
+# macOS, mis-parses a raw apostrophe inside a heredoc nested in $( ) and then fails
+# to parse this whole script (issue #1017). The test asserts this, so reword rather
+# than reach for a possessive.
+DECISION_CHANNEL=$(cat <<'EOF'
+   The status file is the ONLY way a decision request leaves you.
+   Never use the question or ask-the-user tool built into your own harness for a decision, a gate finding, or an approval.
+   It looks like escalation but resolves locally: it returns an answer from whoever happens to be watching your pane, so it manufactures a decision that neither firstmate nor the captain ever made.
+   If that tool is unavailable to you, that is deliberate, and it is not an obstacle to work around.
+   A decision firstmate relays to you belongs to FIRSTMATE unless the reply explicitly says the captain made it.
+   Record it that way; never upgrade a relayed decision into a captain decision in a commit, a gate response, a report, or a status line.
+EOF
+)
+
+# Rule 8, shared by both scaffolds. A leaked dev stack was measured at roughly 12GB
+# an hour of the captain's disk, and the worktree teardown does not reclaim it
+# because containers, images, and build cache live outside the worktree.
+DEVSTACK_RULE=$(cat <<'EOF'
+8. If you start a dev stack (docker compose or equivalent), stop it before you report done, and remove the images and build cache your run created.
+   Worktree cleanup does not reclaim any of that, and a leaked stack costs the captain gigabytes an hour.
+   Leave one running only when firstmate explicitly asked you to keep it up for a visual review.
+EOF
+)
+
 if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
@@ -259,9 +303,11 @@ The report is the only thing that survives, so anything worth keeping must be in
 6. If a decision belongs to a human (product choices, destructive actions),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
    When firstmate replies or a blocker clears and you resume, append \`resolved: {how it was decided or unblocked}\` (add the same \`[key=<slug>]\` if you opened it with one) so the decision or blocker is durably closed and does not keep resurfacing.
+$DECISION_CHANNEL
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+$DEVSTACK_RULE
 
 # Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
@@ -371,9 +417,11 @@ $RULE1
 6. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will apply the configured authority and reply with the decision.
    When firstmate replies or a blocker clears and you resume, append \`resolved: {how it was decided or unblocked}\` (add the same \`[key=<slug>]\` if you opened it with one) so the decision or blocker is durably closed and does not keep resurfacing.
+$DECISION_CHANNEL
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+$DEVSTACK_RULE
 
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.

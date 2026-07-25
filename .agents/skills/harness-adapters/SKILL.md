@@ -75,6 +75,24 @@ Two verified facts worth pinning here.
 The subagent tool presents to the model as `Agent`, and on Claude Code 2.1.217 both `Agent` and `Task` work as `permissions.deny` keys, verified by an A/B with a nonsense-name control.
 `permissions.allow` is a pre-approval list rather than an availability list, so there is no fail-closed positive allowlist.
 
+## Crew decision-channel deny
+
+A crewmate never addresses the captain, so a harness tool that asks a human a question has no legitimate use in a crew pane: it returns an answer from whoever is watching that pane, which lets a crew record a decision nobody above it made.
+For `claude`, `bin/fm-spawn.sh` denies `AskUserQuestion` and `EnterPlanMode` in the per-worktree `.claude/settings.local.json` it already writes for the turn-end hook.
+`bin/fm-brief.sh`'s rule 6 continuation is the harness-agnostic layer that covers every other harness and any future differently-named question tool, since a deny list can only enumerate.
+
+Verified facts, on Claude Code 2.1.220, 2026-07-25.
+
+- `permissions.deny` still binds under `--dangerously-skip-permissions`, which every crew launches with.
+  `claude --dangerously-skip-permissions --output-format stream-json --verbose -p` reported `"permissionMode":"bypassPermissions"` while `Task`, `WebSearch`, and `ScheduleWakeup` were all absent from the `init` event's `tools` array with them denied and present without.
+- `AskUserQuestion` is offered in an interactive crew-shaped session and renders a live question UI, so the channel is real and not a headless-only artifact.
+- Denying it removes it from the schema in that same interactive session: the identical prompt that rendered the question UI without the deny answered `TOOL-ABSENT` with it.
+- `EnterPlanMode` is the indirect form of the same channel, because plan mode reaches a human plan-approval prompt through `ExitPlanMode`.
+  Deny ENTRY, not exit: denying exit could trap a crew that somehow began in plan mode. With `EnterPlanMode` denied, `ExitPlanMode` remains in the schema but only errors with `You are not in plan mode`, so it renders no prompt.
+- A `permissions.deny` list and a `hooks.Stop` entry coexist in one `settings.local.json`; the turn-end hook still fired with both denies in place, so the deny does not cost supervision its turn-end signal.
+
+The tool list differs by mode, so verify a crew-facing tool interactively rather than with `-p`: headless sessions are not offered `AskUserQuestion` at all.
+
 ## Primary session-start nudge
 
 AGENTS.md section 3 remains the behavioral owner for session start, while tracked native adapters invoke `bin/fm-sessionstart-nudge.sh` as an idempotent enforcement layer.
