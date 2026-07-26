@@ -9,6 +9,11 @@ This document records the deterministic mechanism, structured surfaces, and priv
 The command runs tasks-axi in the active `FM_HOME`, so the existing backlog remains the only durable work database and a secondmate-owned decision stays in the secondmate home.
 It never reads report bodies, review artifacts, terminal output, or chat.
 
+tasks-axi retains only the most recent Done items in the active backlog and prunes older ones into the archive configured by `.tasks.toml`, so a durably resolved captain decision stops resolving through `tasks-axi show` once enough newer work lands.
+Task lookups therefore consult that configured archive before treating a record as absent, which keeps the completion gate from stranding an investigation simply because the fleet delivered ten more items.
+The archive is not itself a parseable backlog document, so it is read by restoring the backlog headings in a private throwaway copy and letting tasks-axi parse that, which keeps every field and the escaped single-line body identical to `show --full` rather than duplicating that parser.
+An archived record satisfies only the durable-resolution condition: it must still carry the resolution record, a decision absent from both the backlog and the archive still refuses, and an archive with no configured path leaves the active-backlog behavior unchanged.
+
 The `hold` subcommand maps an originating work id and stable decision key to `<origin-id>-decision-<decision-key>`.
 It creates a kind `captain` backlog item when absent and invokes `tasks-axi hold <id> --reason <reason> --kind captain` on every retry.
 It rejects an identity collision, a changed title, and attempts to reopen an already resolved identity.
@@ -43,11 +48,14 @@ The projection remains read-only and does not inspect historical prose.
 Verification date: 2026-07-14.
 Additional quoted `blocked_by` regression verification date: 2026-07-17.
 Plural blocker-readiness and mixed-home projection verification date: 2026-07-22.
+Archived-decision lookup verification date: 2026-07-26, with tasks-axi 0.2.2 and ShellCheck 0.11.0.
 
 The focused end-to-end regression uses only synthetic `sample` identities and decision text.
 It begins with a completed investigation and visual review whose genuine unresolved choice exists only in the report.
 The initial Bearings snapshot correctly has no open decision, and the new teardown gate refuses to erase the source.
 A later regression covers tasks-axi's quoted multi-entry `blocked_by` output so `resolve` matches the first, middle, and last ids and rejects a genuinely absent id.
+A further regression prunes a durably resolved decision into the archive with `tasks-axi prune --keep 0`, confirms the active-backlog lookup misses, and requires verification and teardown to succeed, while a decision that is genuinely missing and an archived decision closed without a resolution record both still refuse.
+Before the archive lookup existed, that regression failed with `fm-decision-hold: captain decision sample-archive-review-decision-route is absent from <home>/data/backlog.md`.
 
 The final verification commands and their exact summarized outputs follow.
 
@@ -55,6 +63,7 @@ The final verification commands and their exact summarized outputs follow.
 $ bash tests/fm-decision-hold-lifecycle.test.sh
 ok - report-only unresolved decision is reproduced and completion refuses before loss
 ok - non-forced scout teardown always requires durable inventory verification
+ok - archived captain decisions verify, while missing and unresolved ones still refuse
 ok - captain holds are idempotent, distinct, teardown-safe, Bearings-visible, and durably routed before close
 ok - completion and verification validate origins before constructing paths
 ok - ended visual review follows the same decision-hold completion owner

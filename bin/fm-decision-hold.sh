@@ -106,8 +106,69 @@ require_tasks_axi() {
     || fail "tasks-axi does not expose the captain-hold contract"
 }
 
+# tasks-axi keeps only the most recent `done_keep` Done items in the active
+# backlog and prunes older ones into the configured archive, so a durably resolved
+# captain decision stops resolving through `tasks-axi show` purely because enough
+# newer work landed. Lookups therefore fall back to the archive before treating a
+# record as absent. The archive is not itself a parseable backlog document - it
+# stores entries under "## Archived <date>" sections - so it is read by restoring
+# the backlog headings in a private throwaway copy and letting tasks-axi parse it.
+# That keeps every field, including the escaped single-line body, rendered exactly
+# as `show --full` renders it instead of duplicating that parser here.
+archive_file() {
+  local config="$FM_HOME/.tasks.toml" path
+  [ -f "$config" ] || return 1
+  path=$(awk '
+    /^[[:space:]]*\[/ { section = $0; gsub(/[][[:space:]]/, "", section); next }
+    section == "markdown" && /^[[:space:]]*archive[[:space:]]*=/ {
+      value = $0
+      sub(/^[^=]*=[[:space:]]*/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      if (value ~ /^".*"$/ || value ~ /^'"'"'.*'"'"'$/) value = substr(value, 2, length(value) - 2)
+      print value
+      exit
+    }
+  ' "$config")
+  [ -n "$path" ] || return 1
+  case "$path" in
+    /*) printf '%s\n' "$path" ;;
+    *) printf '%s/%s\n' "$FM_HOME" "$path" ;;
+  esac
+}
+
+archive_show() {  # <id>
+  local id=$1 archive dir show status=0
+  archive=$(archive_file) || return 1
+  [ -f "$archive" ] || return 1
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/fm-decision-hold-archive.XXXXXX") \
+    || fail "could not create a private directory to read $archive"
+  # Only column-0 headings are dropped; entry bodies are always indented, so no
+  # archived content can be lost here. A distinct archive path keeps tasks-axi
+  # from refusing the read as an active-path collision.
+  {
+    printf '# Backlog\n\n## In flight\n## Queued\n## Done\n'
+    sed '/^#/d' "$archive"
+  } > "$dir/backlog.md"
+  printf 'backend = "markdown"\n\n[markdown]\npath = "backlog.md"\narchive = "pruned.md"\n' \
+    > "$dir/.tasks.toml"
+  show=$(cd "$dir" && tasks-axi show "$id" --full 2>/dev/null) || status=1
+  rm -rf "$dir"
+  [ "$status" -eq 0 ] || return 1
+  # The archive holds pruned Done items, so an entry there is never actively held.
+  # tasks-axi 0.2.2 already refuses to parse a non-done entry in a Done section;
+  # this keeps a laxer parser from letting a malformed archive satisfy the
+  # actively-held branch of the durable-decision gate.
+  [ "$(show_field "$show" state)" = "done" ] || return 1
+  printf '%s\n' "$show"
+}
+
 task_show() {  # <id>
-  tasks_axi show "$1" --full 2>/dev/null
+  local show
+  if show=$(tasks_axi show "$1" --full 2>/dev/null); then
+    printf '%s\n' "$show"
+    return 0
+  fi
+  archive_show "$1"
 }
 
 show_field() {  # <show-output> <field>
@@ -159,7 +220,7 @@ origin_open_decisions() {  # <origin-id>
 
 verify_hold_active() {  # <hold-id>
   local id=$1 show state held kind hold_kind
-  show=$(task_show "$id") || fail "captain hold $id is absent from $FM_HOME/data/backlog.md"
+  show=$(task_show "$id") || fail "captain hold $id is absent from the backlog and archive of $FM_HOME"
   state=$(show_field "$show" state)
   held=$(show_field "$show" held)
   kind=$(show_field "$show" kind)
@@ -186,7 +247,7 @@ verify_hold_resolved() {  # <hold-id>
 
 verify_hold_durable() {  # <hold-id>
   local id=$1 show state held kind hold_kind body
-  show=$(task_show "$id") || fail "captain decision $id is absent from $FM_HOME/data/backlog.md"
+  show=$(task_show "$id") || fail "captain decision $id is absent from the backlog and archive of $FM_HOME"
   state=$(show_field "$show" state)
   held=$(show_field "$show" held)
   kind=$(show_field "$show" kind)

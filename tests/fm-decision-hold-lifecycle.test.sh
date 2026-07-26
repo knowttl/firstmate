@@ -550,9 +550,101 @@ test_resolve_matches_quoted_blocked_by_edges() {
   pass "resolve matches first/middle/last in quoted blocked_by and rejects a genuinely absent id"
 }
 
+# Retention is the trigger: tasks-axi keeps only the most recent Done items in the
+# active backlog and prunes older ones into the configured archive. A durably
+# resolved captain decision therefore stops resolving through `tasks-axi show`
+# purely because enough newer work landed, which used to strand its investigation
+# permanently because teardown's gate read only the active backlog. The gate must
+# find the archived resolution, and must still refuse a decision that is genuinely
+# absent or archived without a durable resolution record.
+test_archived_captain_decision_verifies_without_weakening_the_gate() {
+  local home origin hold
+  home=$(make_home archived-resolution)
+  origin=sample-archive-review
+  mkdir -p "$home/data/$origin"
+  tasks_in "$home" add "$origin" "Investigate the sample archive" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create the archived-decision origin"
+  write_origin_meta "$home" "$origin"
+  printf 'needs-decision [key=route]: choose route north or route south\ndone: report complete\n' \
+    > "$home/state/$origin.status"
+  printf '# Sample archive review\n\nOne captain choice remains.\n' > "$home/data/$origin/report.md"
+
+  hold=$(run_decisions "$home" hold "$origin" route \
+    --title "Choose the archived sample route" --reason "captain route choice pending" --repo sample) \
+    || fail "could not register the archived-decision hold"
+  tasks_in "$home" add sample-archive-implementation "Apply the archived sample route" \
+    --kind ship --repo sample --blocked-by "$hold" >/dev/null \
+    || fail "could not create the dependent work fixture"
+  printf 'Use route north for the archived sample system.\n' > "$home/archive-decision.txt"
+  run_decisions "$home" resolve "$origin" route --decision-file "$home/archive-decision.txt" \
+    --routed-to sample-archive-implementation >/dev/null \
+    || fail "could not durably resolve the archived-decision hold"
+  run_decisions "$home" complete "$origin" route >/dev/null \
+    || fail "completion failed while the resolved decision was still in the active backlog"
+
+  # Getting work done is what causes the loss, so the fixture prunes exactly the
+  # way retention eventually does.
+  tasks_in "$home" prune --keep 0 >/dev/null \
+    || fail "could not prune the resolved decision into the archive"
+  if tasks_in "$home" show "$hold" --full >/dev/null 2>&1; then
+    fail "fixture did not reproduce the active-backlog lookup miss"
+  fi
+  grep -E "^- \[x\] $hold -" "$home/data/done-archive.md" >/dev/null \
+    || fail "fixture did not archive the resolved decision"
+
+  run_decisions "$home" verify "$origin" >/dev/null \
+    || fail "verification refused a resolved captain decision that retention had archived"
+  run_teardown "$home" "$origin" >/dev/null 2> "$home/archived-teardown.err" \
+    || fail "teardown refused an investigation whose resolved decision was archived: $(cat "$home/archived-teardown.err")"
+
+  # The archive fallback must never turn a lookup miss into a pass.
+  home=$(make_home archived-absent)
+  origin=sample-absent-decision
+  mkdir -p "$home/data/$origin"
+  write_origin_meta "$home" "$origin"
+  printf '# Sample absent decision\n\nThe recorded decision exists nowhere.\n' > "$home/data/$origin/report.md"
+  printf 'decisions_reviewed=1\ndecision_keys=route\n' >> "$home/state/$origin.meta"
+  if run_decisions "$home" verify "$origin" > "$home/absent.out" 2> "$home/absent.err"; then
+    fail "verification passed a captain decision present in neither the backlog nor the archive"
+  fi
+  assert_grep "absent from the backlog and archive" "$home/absent.err" \
+    "a genuinely missing captain decision must still refuse by name"
+
+  # Finding the record in the archive is not enough: it must still prove that the
+  # captain's decision was durably resolved.
+  home=$(make_home archived-unresolved)
+  origin=sample-unresolved-decision
+  mkdir -p "$home/data/$origin"
+  tasks_in "$home" add "$origin" "Investigate the unresolved sample" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create the unresolved-decision origin"
+  write_origin_meta "$home" "$origin"
+  printf 'done: report complete\n' > "$home/state/$origin.status"
+  printf '# Sample unresolved decision\n\nOne captain choice was never answered.\n' > "$home/data/$origin/report.md"
+  hold=$(run_decisions "$home" hold "$origin" route \
+    --title "Choose the unresolved sample route" --reason "captain route choice pending" --repo sample) \
+    || fail "could not register the unresolved-decision hold"
+  run_decisions "$home" complete "$origin" route >/dev/null \
+    || fail "completion failed while the decision was actively held"
+  tasks_in "$home" "done" "$hold" --no-prune >/dev/null \
+    || fail "could not close the hold without a durable decision record"
+  tasks_in "$home" prune --keep 0 >/dev/null \
+    || fail "could not prune the unresolved decision into the archive"
+  grep -E "^- \[x\] $hold -" "$home/data/done-archive.md" >/dev/null \
+    || fail "fixture did not archive the unresolved decision"
+  assert_no_grep "Resolution recorded by fm-decision-hold" "$home/data/done-archive.md" \
+    "fixture must archive the decision without a resolution record"
+  if run_decisions "$home" verify "$origin" > "$home/unresolved.out" 2> "$home/unresolved.err"; then
+    fail "verification passed an archived captain decision that carries no resolution record"
+  fi
+  assert_grep "neither actively held nor durably resolved" "$home/unresolved.err" \
+    "an archived decision without a resolution record must refuse for the right reason"
+  pass "archived captain decisions verify, while missing and unresolved ones still refuse"
+}
+
 test_uninventoried_report_decision_refuses_completion
 
 test_scout_teardown_always_requires_inventory_verification
+test_archived_captain_decision_verifies_without_weakening_the_gate
 test_structured_holds_survive_teardown_and_route_resolution
 test_origin_slug_validation_precedes_path_construction
 test_visual_review_uses_shared_completion_owner
