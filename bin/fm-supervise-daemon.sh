@@ -568,7 +568,6 @@ pane_is_busy() {  # <target> [backend]
   bs=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null)
   case "$bs" in
     busy) return 0 ;;
-    idle) return 1 ;;
   esac
   tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || return 1
   printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12 \
