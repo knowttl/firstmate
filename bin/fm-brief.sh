@@ -33,6 +33,8 @@
 #   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> captain merge
 #   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
 #                captain approves, firstmate merges to local main
+# Both crewmate scaffolds share one context-first rule (CONTEXT_RULE) so it cannot
+# drift between the ship and scout variants.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
 # Scout tasks ignore mode - their deliverable is a report, not a merge.
 # Every scaffold's status protocol distinguishes the configured
@@ -226,6 +228,14 @@ EOF
 )
 fi
 
+# Shared by both crewmate scaffolds so the context-first contract cannot drift between them.
+CONTEXT_RULE=$(cat <<'EOF'
+8. Gather the full relevant context before you decide anything or write code: read the code path that DECIDES the outcome end to end (not just the path that supports it), the project's `AGENTS.md`, applicable specs or design docs, and recent related changes.
+   Confirm every load-bearing premise with a second, differently shaped check; never build on an absence claim proven by a single grep or one narrow check.
+   Report only what you have verified; if you have not checked a claim against the real artifact, say so instead of stating it as fact.
+EOF
+)
+
 if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
@@ -262,6 +272,7 @@ The report is the only thing that survives, so anything worth keeping must be in
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+$CONTEXT_RULE
 
 # Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
@@ -374,6 +385,7 @@ $RULE1
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+$CONTEXT_RULE
 
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.

@@ -204,6 +204,33 @@ test_herdr_lab_omission_is_loud_for_ship_and_scout() {
   pass "fm-brief.sh: ship and scout scaffolds make omitted Herdr intent fail-visible"
 }
 
+# Every crewmate, ship or scout, must receive the context-first rule verbatim, so it
+# does not depend on the briefing habits of whichever supervisor dispatched the task.
+test_context_first_rule_in_ship_and_scout() {
+  local home id brief kind hits
+  home="$TMP_ROOT/context-first-home"
+  mkdir -p "$home/data"
+  for kind in ship scout; do
+    id="brief-context-first-$kind"
+    if [ "$kind" = scout ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --scout >/dev/null 2>&1
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate >/dev/null 2>&1
+    fi
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$kind brief was not scaffolded"
+    assert_grep "read the code path that DECIDES the outcome end to end (not just the path that supports it)" "$brief" \
+      "$kind brief lost the decide-path context requirement"
+    assert_grep "never build on an absence claim proven by a single grep or one narrow check" "$brief" \
+      "$kind brief lost the second differently shaped confirmation of load-bearing premises"
+    assert_grep "if you have not checked a claim against the real artifact, say so instead of stating it as fact" "$brief" \
+      "$kind brief lost the verified-reporting requirement"
+    hits=$(grep -Fc "Gather the full relevant context before you decide anything or write code" "$brief")
+    [ "$hits" -eq 1 ] || fail "$kind brief must carry the context-first rule exactly once (found $hits)"
+  done
+  pass "fm-brief.sh: ship and scout scaffolds carry the context-first rule"
+}
+
 test_secondmate_no_projects_charter() {
   local home brief status
   home="$TMP_ROOT/no-projects-home"
@@ -392,6 +419,7 @@ test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout
 test_herdr_lab_contract_applies_to_scouts_but_not_secondmates
+test_context_first_rule_in_ship_and_scout
 test_secondmate_no_projects_charter
 test_secondmate_marked_request_reporting_contract
 test_pause_verb_override_renders_all_brief_scaffolds
