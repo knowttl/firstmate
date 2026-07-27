@@ -164,9 +164,23 @@ hash_pane() {
 # falls back to the recorded harness's verified pane-tail signature. <tail40> is
 # the same bounded capture already read for hashing, so this adds no extra
 # backend calls on the regex-fallback path.
+#
+# A matched frame signature alone is NOT proof of a live worker: an agent
+# process that exits leaves its last rendered frame - spinner and all - painted
+# in the pane, and that residual frame keeps matching the harness busy signature
+# on every subsequent poll, so the dead endpoint never goes stale and never
+# reaches recovery (reproduced 2026-07-27 on herdr, ~16h undetected). Where the
+# backend can answer agent PRESENCE authoritatively, a confirmed agent-less
+# endpoint therefore overrides the frame (fm_backend_agent_confirmed_absent,
+# bin/fm-backend.sh, which owns both the per-backend capability and the
+# two-read confirmation that keeps a status flap from reading as dead). Backends
+# with no trustworthy presence signal keep their frame-signature behavior. The
+# check runs only on the frame-matched branch, so a live busy pane pays one
+# presence read and a plainly-idle pane pays none.
 window_is_busy() {  # <window> <tail40>
-  local w=$1 tail40=$2 bs harness lines
-  bs=$(fm_backend_busy_state "$(window_backend "$w")" "$w" 2>/dev/null)
+  local w=$1 tail40=$2 bs harness lines backend
+  backend=$(window_backend "$w")
+  bs=$(fm_backend_busy_state "$backend" "$w" 2>/dev/null)
   case "$bs" in
     busy) return 0 ;;
     idle) return 1 ;;
@@ -174,10 +188,12 @@ window_is_busy() {  # <window> <tail40>
       lines=$(printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12)
       harness=$(window_harness "$w")
       if [ -n "${FM_BUSY_REGEX:-}" ]; then
-        printf '%s' "$lines" | grep -qiE "$BUSY_REGEX"
+        printf '%s' "$lines" | grep -qiE "$BUSY_REGEX" || return 1
       else
-        printf '%s' "$lines" | fm_busy_lines_match "$harness"
+        printf '%s' "$lines" | fm_busy_lines_match "$harness" || return 1
       fi
+      fm_backend_agent_confirmed_absent "$backend" "$w" 2>/dev/null && return 1
+      return 0
       ;;
   esac
 }

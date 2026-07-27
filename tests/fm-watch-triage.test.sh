@@ -108,6 +108,62 @@ test_stale_is_terminal_classifier() {
   pass "stale_is_terminal: terminal status surfaces, non-terminal and no-status are benign"
 }
 
+# window_is_busy: a matched busy FRAME is not proof of a live worker. An agent
+# process that exits leaves its last rendered frame - spinner and all - painted
+# in the pane, so the frame keeps matching the harness signature on every poll
+# and the dead endpoint never goes stale (reproduced 2026-07-27 on herdr, ~16h
+# undetected). Where the backend can answer agent presence authoritatively, a
+# confirmed agent-less endpoint must lose to the frame; a live agent (busy or
+# idle) must keep its current classification.
+test_window_is_busy_requires_a_present_agent() (
+  local dir state busy_frame='  ✳ Reticulating… (esc to interrupt)' idle_frame='> ready'
+  dir=$(make_case busy-frame-liveness); state="$dir/state"
+  fm_write_meta "$state/deadframe.meta" "window=default:w1:p2" "backend=herdr" "harness=claude"
+  unset FM_BUSY_REGEX
+  FM_HOME="$dir/home"
+  FM_STATE_OVERRIDE="$state"
+  export FM_HOME FM_STATE_OVERRIDE
+  # shellcheck source=/dev/null
+  . "$ROOT/bin/fm-watch.sh"
+  # shellcheck disable=SC2329 # Runtime overrides called by the sourced watcher.
+  fm_backend_busy_state() { printf 'unknown'; }
+  # shellcheck disable=SC2329
+  fm_backend_agent_state() { printf '%s' "$FM_TEST_AGENT_STATE"; }
+  # Keeps the confirming re-read (the behavior under test) while dropping its
+  # inter-read sleep, which only exists to outlast a live agent's status flap.
+  export FM_AGENT_ABSENT_CONFIRM_SECS=0
+
+  FM_TEST_AGENT_STATE=alive
+  window_is_busy default:w1:p2 "$busy_frame" \
+    || fail "a live agent with a busy frame must still classify busy"
+  if window_is_busy default:w1:p2 "$idle_frame"; then
+    fail "a live agent with an idle frame must not classify busy"
+  fi
+
+  FM_TEST_AGENT_STATE=dead
+  if window_is_busy default:w1:p2 "$busy_frame"; then
+    fail "an agent-less herdr endpoint must not classify busy from its residual frame"
+  fi
+  FM_TEST_AGENT_STATE=missing
+  if window_is_busy default:w1:p2 "$busy_frame"; then
+    fail "a structurally gone herdr endpoint must not classify busy from its residual frame"
+  fi
+
+  # An inconclusive presence read must never demote a busy frame.
+  FM_TEST_AGENT_STATE=unreadable
+  window_is_busy default:w1:p2 "$busy_frame" \
+    || fail "an unreadable presence verdict must leave the frame signature in charge"
+
+  # A backend with no authoritative presence surface keeps frame-only behavior,
+  # even when its recovery classifier would say dead (tmux reads the pane's
+  # foreground command, which a live harness shelling out legitimately owns).
+  fm_write_meta "$state/deadframe.meta" "window=fm:fm-deadframe" "backend=tmux" "harness=claude"
+  FM_TEST_AGENT_STATE=dead
+  window_is_busy fm:fm-deadframe "$busy_frame" \
+    || fail "tmux must keep its frame-signature busy behavior"
+  pass "window_is_busy: a residual busy frame needs a present agent on a presence-capable backend"
+)
+
 test_scan_captain_relevant_statuses_classifier() {
   local dir state out
   dir=$(make_case classify-scan); state="$dir/state"
@@ -1274,6 +1330,7 @@ test_signal_reason_is_actionable_classifier
 test_stale_is_terminal_classifier
 test_scan_captain_relevant_statuses_classifier
 test_classifier_primitives
+test_window_is_busy_requires_a_present_agent
 test_crew_is_provably_working_classifier
 test_status_is_paused_classifier
 test_crew_absorb_class_classifier

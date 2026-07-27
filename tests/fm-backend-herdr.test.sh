@@ -2377,6 +2377,100 @@ test_dispatch_busy_state_unknown_for_tmux() {
   pass "fm_backend_busy_state: tmux (no native primitive) always reports unknown, preserving the P1 regex-only path"
 }
 
+# --- agent-presence liveness (busy-frame masking) ---------------------------
+#
+# When an agent process exits, herdr keeps the pane and its LAST RENDERED FRAME,
+# spinner and all. That residual frame keeps matching the harness busy signature
+# forever, so a frame-only busy read classifies the dead endpoint as a working
+# crew on every poll and it never goes stale (reproduced 2026-07-27: `herdr pane
+# list` reported no `agent` field and agent_status "unknown" for the pane the
+# whole time, while the task showed as working for ~16h).
+# fm_backend_agent_confirmed_absent is the authoritative override, and it must
+# be certain in both directions: agent-less only when TWO reads agree, live on
+# the first read that finds a registered agent.
+#
+# Response order per read: `pane get` then `agent get`.
+herdr_confirmed_absent_case() {  # <name> <response-file-contents...> -> echoes "<rc> <call-count>"
+  local name=$1
+  shift
+  local dir log resp fb n=0 rc
+  dir="$TMP_ROOT/$name"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  for body in "$@"; do
+    n=$((n + 1))
+    printf '%s\n' "$body" > "$resp/$n.out"
+  done
+  fb=$(make_herdr_fakebin "$dir")
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_AGENT_ABSENT_CONFIRM_SECS=0 \
+    bash -c '. "$0/bin/fm-backend.sh"; fm_backend_agent_confirmed_absent herdr default:w1:p2' "$ROOT" >/dev/null 2>&1
+  rc=$?
+  printf '%s %s\n' "$rc" "$(grep -c . "$log")"
+}
+
+test_agent_confirmed_absent_dead_agent_with_busy_frame() {
+  local out
+  out=$(herdr_confirmed_absent_case confirmed-absent-dead \
+    '{"result":{"pane":{"pane_id":"w1:p2"}}}' \
+    '{"error":{"code":"agent_not_found"}}' \
+    '{"result":{"pane":{"pane_id":"w1:p2"}}}' \
+    '{"error":{"code":"agent_not_found"}}')
+  [ "${out%% *}" = 0 ] || fail "a pane that exists with no registered agent must confirm as agent-absent, got rc ${out%% *}"
+  [ "${out##* }" = 4 ] || fail "the confirmation must re-read the endpoint (expected 4 calls, got ${out##* })"
+  pass "fm_backend_agent_confirmed_absent: a live pane with no registered agent confirms absent across two reads"
+}
+
+test_agent_confirmed_absent_live_agent_short_circuits() {
+  local out
+  out=$(herdr_confirmed_absent_case confirmed-absent-live \
+    '{"result":{"pane":{"pane_id":"w1:p2"}}}' \
+    '{"result":{"agent":{"agent_status":"working"}}}')
+  [ "${out%% *}" = 1 ] || fail "a registered working agent must never confirm as absent"
+  [ "${out##* }" = 2 ] || fail "a live first read must short-circuit before the confirming re-read, got ${out##* } calls"
+  pass "fm_backend_agent_confirmed_absent: a live agent loses on the first read and costs no re-read"
+}
+
+test_agent_confirmed_absent_survives_transient_flap() {
+  local out
+  # A live pane that momentarily reads agent-less mid-repaint: the confirming
+  # re-read finds the agent, so it must NOT be classified dead (this is what
+  # keeps the fix from minting false stales on a busy worker).
+  out=$(herdr_confirmed_absent_case confirmed-absent-flap \
+    '{"result":{"pane":{"pane_id":"w1:p2"}}}' \
+    '{"error":{"code":"agent_not_found"}}' \
+    '{"result":{"pane":{"pane_id":"w1:p2"}}}' \
+    '{"result":{"agent":{"agent_status":"working"}}}')
+  [ "${out%% *}" = 1 ] || fail "a transient agent-status flap must not confirm as agent-absent"
+  pass "fm_backend_agent_confirmed_absent: a transient flap is rejected by the confirming re-read"
+}
+
+test_agent_confirmed_absent_inconclusive_read_never_confirms() {
+  local out
+  # An unrecognized error code from `pane get` is `unreadable`, not `dead`: an
+  # inconclusive read must never override the caller's existing classification.
+  out=$(herdr_confirmed_absent_case confirmed-absent-unreadable \
+    '{"error":{"code":"internal_error"}}' \
+    '{"error":{"code":"internal_error"}}')
+  [ "${out%% *}" = 1 ] || fail "an unreadable presence verdict must not confirm as agent-absent"
+  pass "fm_backend_agent_confirmed_absent: an inconclusive read never confirms absence"
+}
+
+test_agent_presence_capability_is_herdr_only() {
+  # Backends with no registration surface keep their existing frame-signature
+  # behavior. tmux is deliberately excluded even though it HAS an agent-state
+  # classifier: its `dead` verdict reads the pane's foreground command, which a
+  # live harness running a shell tool call legitimately makes a bare shell.
+  (
+    # shellcheck source=bin/fm-backend.sh
+    . "$ROOT/bin/fm-backend.sh"
+    fm_backend_has_agent_presence herdr || fail "herdr must expose authoritative agent presence"
+    for b in tmux zellij orca cmux bogus; do
+      fm_backend_has_agent_presence "$b" && fail "backend '$b' must not claim authoritative agent presence"
+    done
+    fm_backend_agent_confirmed_absent tmux 'sess:win' && fail "an unsupported backend must never confirm agent absence"
+    : # a trailing `&&` test that fell through must not fail the subshell
+  ) || fail "agent-presence capability subshell failed"
+  pass "fm_backend_has_agent_presence: herdr only; every other backend keeps its frame-signature behavior"
+}
+
 test_dispatch_composer_state_routes_by_backend() {
   # fm_backend_composer_state (the generic per-backend composer/pending-input
   # classifier the away-mode daemon dispatches through - bin/fm-supervise-daemon.sh's
@@ -3087,6 +3181,11 @@ test_send_text_submit_send_failed
 test_send_text_submit_unknown_on_capture_failure
 test_dispatch_routes_herdr_backend
 test_dispatch_busy_state_unknown_for_tmux
+test_agent_confirmed_absent_dead_agent_with_busy_frame
+test_agent_confirmed_absent_live_agent_short_circuits
+test_agent_confirmed_absent_survives_transient_flap
+test_agent_confirmed_absent_inconclusive_read_never_confirms
+test_agent_presence_capability_is_herdr_only
 test_dispatch_composer_state_routes_by_backend
 test_scripts_route_explicit_target_through_meta_backend
 test_normalize_event_leaves_from_empty
