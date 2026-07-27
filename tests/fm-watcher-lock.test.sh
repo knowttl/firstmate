@@ -575,6 +575,105 @@ test_arm_attaches_and_waits_for_live_fresh_watcher() {
   pass "arm attaches to a live fresh watcher and fails loudly when that cycle has no successor"
 }
 
+# Seed a live watcher, then attach an arm to it, leaving both running and their
+# pids in SEED_WATCHER_PID/SEED_ARM_PID. Sets globals rather than echoing them:
+# a command substitution would make the caller's wait_for_exit target processes
+# that are children of the substitution subshell, not of the test shell.
+SEED_WATCHER_PID=
+SEED_ARM_PID=
+seed_watcher_with_attached_arm() {  # <dir> <watch-out> <arm-out>
+  local dir=$1 out=$2 armout=$3 state fakebin wpid armpid i
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  mark_pr_check_migration_complete "$state"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  wpid=$!
+  i=0
+  while [ "$i" -lt 60 ]; do
+    [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$wpid" ] && [ -e "$state/.last-watcher-beat" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$wpid" ] || fail "seed watcher did not take the lock"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_ARM_ATTACH_POLL=0.1 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$armout" &
+  armpid=$!
+  i=0
+  while [ "$i" -lt 80 ]; do
+    grep -qF "watcher: attached pid=$wpid" "$armout" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -qF "watcher: attached pid=$wpid" "$armout" || fail "arm did not attach to the seed watcher"
+  SEED_WATCHER_PID=$wpid
+  SEED_ARM_PID=$armpid
+}
+
+# The reproduced defect: under wake-heavy load an attached arm's watcher closes
+# by DELIVERING its wake to the arm that owns it as a child. The attached arm
+# only sees the lock disappear, so it used to call a successful close
+# "cycle ended without an actionable reason" and exit 1, which told the model
+# supervision was down while the wake was in fact arriving normally.
+test_attached_arm_accounts_delivered_close_as_success() {
+  local dir state out armout wpid armpid status
+  dir=$(make_case arm-delivered-close)
+  state="$dir/state"
+  out="$dir/watch.out"
+  armout="$dir/arm.out"
+  seed_watcher_with_attached_arm "$dir" "$out" "$armout"
+  wpid=$SEED_WATCHER_PID
+  armpid=$SEED_ARM_PID
+
+  # A captain-relevant status makes the seed watcher deliver one actionable wake
+  # to its OWN stdout and close - exactly the close the attached arm misread.
+  printf 'working: setup\nneeds-decision: pick A or B\n' > "$state/task.status"
+  wait_for_exit "$wpid" 200
+  grep -qF "signal: $state/task.status" "$out" || fail "seed watcher did not deliver an actionable wake: $(cat "$out")"
+
+  wait_for_exit "$armpid" 200
+  status=$?
+  [ "$status" -eq 0 ] || fail "attached arm did not account a delivered close as success (status $status): $(cat "$armout")"
+  ! grep -qF 'watcher: FAILED' "$armout" || fail "attached arm reported FAILED for a delivering close: $(cat "$armout")"
+  grep -qF "watcher: closed pid=$wpid (wake delivered by its owning arm)" "$armout" \
+    || fail "attached arm did not report the delivering close: $(cat "$armout")"
+  grep -qF "signal: $state/task.status" "$armout" \
+    || fail "attached arm did not repeat the delivered wake reason: $(cat "$armout")"
+  grep -q "arm_pid=$armpid.*watcher_pid=$wpid.*origin=attached.*reason=attached-cycle-delivered" "$state/.watch-cycle-exits.log" \
+    || fail "delivering close was not classified in the lifecycle ledger"
+  pass "an attached cycle whose watcher delivered its wake closes successfully"
+}
+
+# A delivery receipt only excuses the exact cycle it belongs to. A receipt left
+# by an EARLIER cycle of the same pid must never launder a watcher that died
+# without delivering anything.
+test_attached_arm_rejects_stale_delivery_receipt() {
+  local dir state out armout wpid armpid status identity
+  dir=$(make_case arm-stale-receipt)
+  state="$dir/state"
+  out="$dir/watch.out"
+  armout="$dir/arm.out"
+  seed_watcher_with_attached_arm "$dir" "$out" "$armout"
+  wpid=$SEED_WATCHER_PID
+  armpid=$SEED_ARM_PID
+
+  # Correct pid and correct lock identity, but delivered long before this cycle.
+  identity=$(cat "$state/.watch.lock/pid-identity" 2>/dev/null || true)
+  [ -n "$identity" ] || fail "seed watcher published no lock identity"
+  printf 'watcher_pid=%s\tidentity=%s\tdelivered_at=1\treason=signal: stale receipt\n' \
+    "$wpid" "$identity" > "$state/.watch-cycle-delivery"
+
+  kill "$wpid" 2>/dev/null || true
+  wait_for_exit "$wpid" 100
+  wait_for_exit "$armpid" 200
+  status=$?
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "attached arm accepted a stale receipt as a delivered close (status $status)"
+  grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$armout" \
+    || fail "attached arm did not emit the typed cycle-end failure: $(cat "$armout")"
+  ! grep -qF 'watcher: closed pid=' "$armout" || fail "attached arm reported a delivering close off a stale receipt"
+  grep -q "arm_pid=$armpid.*origin=attached.*reason=attached-cycle-ended" "$state/.watch-cycle-exits.log" \
+    || fail "genuine attached-cycle failure was not classified in the lifecycle ledger"
+  pass "a stale delivery receipt never excuses a genuinely failed attached cycle"
+}
+
 test_attached_arm_signal_is_recorded_in_cycle_ledger() {
   local dir state fakebin out armout i wpid armpid status
   dir=$(make_case attached-arm-signal-ledger)
@@ -975,6 +1074,8 @@ test_watch_restart_attaches_to_healthy_peer
 test_watcher_self_evicts_on_lock_takeover
 test_arm_self_eviction_is_loud_without_successor
 test_arm_attaches_and_waits_for_live_fresh_watcher
+test_attached_arm_accounts_delivered_close_as_success
+test_attached_arm_rejects_stale_delivery_receipt
 test_attached_arm_signal_is_recorded_in_cycle_ledger
 test_arm_starts_and_self_heals
 test_arm_hup_cleans_child_and_temp_output

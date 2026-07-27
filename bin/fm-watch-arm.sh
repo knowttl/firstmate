@@ -28,6 +28,10 @@
 #   watcher: started pid=<N> (beacon fresh)              - it launched one and confirmed it
 #   watcher: attached pid=<N> (beacon <age>s)            - a live+fresh successor holds the lock;
 #                                                          this arm attaches and follows it
+#   watcher: closed pid=<N> (wake delivered by its owning arm)
+#                                                        - an attached cycle closed after its
+#                                                          watcher delivered a wake; the reason
+#                                                          line follows and this arm exits 0
 #   watcher: FAILED - no live watcher with a fresh beacon  - could not confirm one
 #   watcher: FAILED - cycle ended without an actionable reason
 #                                                        - a clean cycle ended with no wake and no
@@ -37,10 +41,11 @@
 # dead lock per the singleton self-eviction/steal path and is confirmed) or this
 # returns the FAILED line. On started it waits the child and propagates the wake
 # reason; on attached it stays live across identity-matched successors. An
-# attached cycle that ends without a healthy successor is a typed nonzero failure,
-# never a clean empty completion. On FAILED it exits non-zero so the failure is
-# loud. A live cycle already present means re-arm attaches - do not start a second
-# watcher.
+# attached cycle that ends with neither a healthy successor nor a matching
+# delivery receipt (state/.watch-cycle-delivery, written by the watcher that
+# delivered the wake) is a typed nonzero failure, never a clean empty completion.
+# On FAILED it exits non-zero so the failure is loud. A live cycle already
+# present means re-arm attaches - do not start a second watcher.
 #
 # Every observed watcher cycle appends one tab-separated lifecycle record to
 # state/.watch-cycle-exits.log. The arm layer owns that bounded ledger; it records
@@ -71,6 +76,7 @@ GRACE=${FM_GUARD_GRACE:-300}
 CONFIRM_TIMEOUT=${FM_ARM_CONFIRM_TIMEOUT:-10}
 # Poll interval while attached to an existing healthy watcher.
 ATTACH_POLL=${FM_ARM_ATTACH_POLL:-0.5}
+DELIVERY_RECEIPT="$STATE/.watch-cycle-delivery"
 CYCLE_LOG="$STATE/.watch-cycle-exits.log"
 CYCLE_LOG_LOCK="$STATE/.watch-cycle-exits.lock"
 CYCLE_LOG_MAX_BYTES=${FM_WATCH_CYCLE_LOG_MAX_BYTES:-262144}
@@ -255,9 +261,63 @@ fail_unexplained_cycle() {
   return 1
 }
 
+# An attached arm never sees the watcher's stdout: the wake reason goes to the
+# arm that owns that watcher as its child. Read the watcher's identity-bound
+# delivery receipt (bin/fm-push-transition-lib.sh) so a close that DID deliver
+# its wake is accounted as the successful cycle end it is. Every field must
+# match the cycle this arm was attached to - the same pid, the same lock
+# identity captured at attach, and a delivery no older than this cycle - so a
+# stale, foreign, or recycled-pid receipt still falls through to the typed
+# failure. Sets DELIVERED_REASON on success.
+DELIVERED_REASON=
+attached_cycle_delivered() {  # <attached-pid>
+  local pid=$1 lock_pid lock_identity receipt_pid receipt_identity delivered_at reason
+  DELIVERED_REASON=
+  lock_pid=${cycle_lock_before%%|*}
+  lock_pid=${lock_pid#pid:}
+  lock_identity=${cycle_lock_before#*|identity:}
+  [ "$lock_pid" = "$pid" ] || return 1
+  [ -n "$lock_identity" ] && [ "$lock_identity" != none ] || return 1
+
+  [ -r "$DELIVERY_RECEIPT" ] || return 1
+  IFS=$'\t' read -r receipt_pid receipt_identity delivered_at reason < "$DELIVERY_RECEIPT" || return 1
+  [ "$receipt_pid" != "${receipt_pid#watcher_pid=}" ] || return 1
+  [ "$receipt_identity" != "${receipt_identity#identity=}" ] || return 1
+  [ "$delivered_at" != "${delivered_at#delivered_at=}" ] || return 1
+  [ "$reason" != "${reason#reason=}" ] || return 1
+  receipt_pid=${receipt_pid#watcher_pid=}
+  receipt_identity=${receipt_identity#identity=}
+  delivered_at=${delivered_at#delivered_at=}
+  reason=${reason#reason=}
+
+  [ "$receipt_pid" = "$pid" ] || return 1
+  [ "$(cycle_clean_field "$receipt_identity")" = "$lock_identity" ] || return 1
+  case "$delivered_at" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$delivered_at" -ge "$cycle_started_at" ] || return 1
+  [ -n "$reason" ] || return 1
+  DELIVERED_REASON=$reason
+}
+
+# Report an attached watcher's delivering close. The cycle ended for a real
+# supervision reason, so this arm closes successfully and repeats that reason:
+# no watcher is left running, and the adapter that started this arm must notify
+# the model exactly as it does for an owned actionable close. The durable wake
+# queue is the delivery mechanism, so a repeated notification is idempotent
+# while a silent zero close would leave the home unsupervised until the next
+# turn end.
+report_delivered_close() {  # <attached-pid>
+  local pid=$1
+  cycle_log_append unknown unknown attached-cycle-delivered none
+  echo "watcher: closed pid=$pid (wake delivered by its owning arm)"
+  printf '%s\n' "$DELIVERED_REASON"
+}
+
 # Stay alive across identity-matched healthy holders. If one cycle ends, attach
-# to a verified successor. With no successor, fail loudly instead of returning a
-# clean empty completion that an adapter could mistake for a no-op.
+# to a verified successor. With no successor, report a proven delivering close
+# or else fail loudly - never a clean empty completion an adapter could mistake
+# for a no-op.
 attach_and_wait() {
   local attached_pid=$1
   while :; do
@@ -277,6 +337,10 @@ attach_and_wait() {
       cycle_begin "$attached_pid" attached
       report_attached
       continue
+    fi
+    if attached_cycle_delivered "$attached_pid"; then
+      report_delivered_close "$attached_pid"
+      return 0
     fi
     cycle_log_append unknown unknown attached-cycle-ended none
     fail_unexplained_cycle
