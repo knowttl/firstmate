@@ -111,11 +111,27 @@ case "${1:-}" in
         if [ "${FM_FAKE_HERDR_BUSY:-0}" = 1 ]; then printf 'work in progress\nesc to interrupt\n'
         else printf 'all quiet\n> \n'; fi
         exit 0 ;;
+      get)
+        # Structural pane presence, independent of whether an agent is
+        # registered in it - the two are separate questions in real herdr, and
+        # the agent-presence liveness read depends on telling them apart.
+        [ "${FM_FAKE_HERDR_MISSING:-0}" = 1 ] && {
+          printf '{"error":{"code":"pane_not_found"}}\n' >&2
+          exit 1
+        }
+        printf '{"result":{"pane":{"pane_id":"%s"}}}\n' "${3:-}"
+        exit 0 ;;
     esac ;;
   agent)
     case "${2:-}" in
       get)
-        [ -n "${FM_FAKE_HERDR_AGENT_STATUS:-}" ] || exit 1
+        # Real herdr answers a pane with no registered agent with an
+        # agent_not_found error body on STDERR, exit 1 (verified behavior
+        # recorded in bin/backends/herdr.sh).
+        [ -n "${FM_FAKE_HERDR_AGENT_STATUS:-}" ] || {
+          printf '{"error":{"code":"agent_not_found"}}\n' >&2
+          exit 1
+        }
         printf '{"result":{"agent":{"agent_status":"%s"}}}\n' "$FM_FAKE_HERDR_AGENT_STATUS"
         exit 0 ;;
     esac ;;
@@ -139,8 +155,11 @@ make_no_timeout_toolbin() {  # <dir> -> echoes toolbin path
 
 # Run the helper for one case dir. FM_FAKE_* env (run output, busy flag) are read
 # from the caller's environment by the fakes above.
+# FM_AGENT_ABSENT_CONFIRM_SECS=0 keeps the agent-absence confirmation's second
+# read (the behavior under test) while removing its inter-read sleep, which
+# exists only to outlast a live agent's transient status flap.
 run_crew_state() {  # <case-dir> <id>
-  PATH="$1/fakebin:$PATH" FM_STATE_OVERRIDE="$1/state" "$CREW_STATE" "$2"
+  PATH="$1/fakebin:$PATH" FM_STATE_OVERRIDE="$1/state" FM_AGENT_ABSENT_CONFIRM_SECS=0 "$CREW_STATE" "$2"
 }
 
 new_case() {  # <name> -> echoes case dir with an empty state/
@@ -802,11 +821,47 @@ test_no_run_herdr_unknown_uses_backend_capture() {
   FM_FAKE_RUNS_LIST=""
   FM_FAKE_TMUX_MISSING=1
   FM_FAKE_HERDR_BUSY=1
-  FM_FAKE_HERDR_AGENT_STATUS=""
+  # A REGISTERED agent whose status word the adapter does not classify: the
+  # native busy read is unknown, but the agent is present, so the pane text is
+  # still the right tiebreaker. (An absent agent is a different case entirely -
+  # see test_no_run_herdr_dead_agent_busy_frame_reads_gone below.)
+  FM_FAKE_HERDR_AGENT_STATUS=starting
   local out; out=$(run_crew_state "$d" feat-herdr)
   assert_contains "$out" "state: working" "herdr busy pane -> working"
   assert_contains "$out" "source: pane" "herdr busy pane -> pane source"
   pass "herdr unknown native state falls back to backend capture busy regex"
+}
+
+# Regression for the busy-frame liveness hole (reproduced 2026-07-27): when an
+# agent process exits, its LAST RENDERED FRAME stays painted in the pane, and
+# that residual frame keeps matching the harness busy signature on every poll -
+# so the crew read as `working · pane` and the dead endpoint never became a
+# recovery candidate (~16h undetected). Herdr can answer agent presence
+# authoritatively, so an agent-less endpoint must report gone regardless of what
+# its frame still shows.
+test_no_run_herdr_dead_agent_busy_frame_reads_gone() {
+  command -v jq >/dev/null 2>&1 || { pass "herdr dead-agent case skipped without jq"; return; }
+  reset_fakes
+  local d; d=$(new_case herdr-dead-agent)
+  make_repo_on_branch "$d/wt" fm/feat-herdr-dead
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-herdr-dead.meta" "window=default:w1:p9" "worktree=$d/wt" "kind=ship" "backend=herdr"
+  printf 'working: implementing\n' > "$d/state/feat-herdr-dead.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_TMUX_MISSING=1
+  # The pane is still readable and its frame still shows the busy banner; only
+  # the agent registration is gone.
+  FM_FAKE_HERDR_BUSY=1
+  FM_FAKE_HERDR_AGENT_STATUS=""
+  local out; out=$(run_crew_state "$d" feat-herdr-dead)
+  assert_contains "$out" "state: unknown" "an agent-less herdr endpoint must not read as working"
+  assert_contains "$out" "source: none" "an agent-less herdr endpoint must not be sourced from its residual frame"
+  assert_contains "$out" "no agent registered" "the detail should name the missing agent"
+  PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" FM_AGENT_ABSENT_CONFIRM_SECS=0 \
+    crew_is_provably_working feat-herdr-dead \
+    && fail "a dead-agent crew with a busy-looking frame must not be provably working"
+  pass "herdr dead agent with a residual busy frame reads gone, not working"
 }
 
 # Regression: herdr's agent.get reports generation state ("working" only while
@@ -1258,6 +1313,7 @@ test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status
 test_other_branch_run_ignored
 test_no_run_busy_pane
 test_no_run_herdr_unknown_uses_backend_capture
+test_no_run_herdr_dead_agent_busy_frame_reads_gone
 test_no_run_herdr_idle_agent_status_corroborated_by_busy_pane
 test_no_run_herdr_idle_agent_status_and_idle_pane_stays_idle
 test_no_run_idle_pane_uses_log

@@ -40,7 +40,9 @@
 #      is flagged superseded. A genuinely parked run plus a needs-decision log
 #      agree, and are reported as parked.
 #   4. No run for this crew (pre-validation, or kind=scout): fall back to the
-#      recorded backend's pane busy state, then the status log's last line only
+#      recorded backend's authoritative agent-presence read where it has one (an
+#      agent-less endpoint is reported gone, never read from its residual
+#      frame), then the pane busy state, then the status log's last line only
 #      when its verb maps to a recognized run-state. Decision-only events such as
 #      `resolved` never become current state or detail.
 #   5. Missing meta or torn-down worktree: report unknown · none. If no run is
@@ -603,6 +605,20 @@ fi
 # unknown rather than trusting a possibly-stale status log as the current state.
 [ -n "$BACKEND_TARGET" ] || emit unknown none "no backend target recorded"
 pane_readable "$BACKEND_TARGET" || emit unknown none "backend target gone: $BACKEND_TARGET"
+
+# A readable endpoint is not a live worker. When an agent process exits, the
+# pane it ran in can survive with its last frame still painted, and that frame
+# keeps matching the harness busy signature below - so without this check an
+# agent-less endpoint reports `working · pane` forever and never becomes a
+# recovery candidate. Backends that can answer agent PRESENCE authoritatively
+# settle it here, ahead of the frame read; every other backend falls through
+# unchanged (fm_backend_agent_confirmed_absent, bin/fm-backend.sh, owns the
+# per-backend capability and the two-read confirmation). This is the same
+# "the crew is gone, do not trust a possibly-stale status log" verdict the
+# unreadable-target check above already emits.
+if fm_backend_agent_confirmed_absent "$TASK_BACKEND" "$BACKEND_TARGET" 2>/dev/null; then
+  emit unknown none "endpoint alive but no agent registered: $BACKEND_TARGET"
+fi
 
 # Secondmates idle on their own watcher (idle pane = healthy), so the busy
 # signature is not meaningful for them; read their state from the status log only.
