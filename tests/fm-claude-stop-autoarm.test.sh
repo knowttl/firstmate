@@ -89,6 +89,16 @@ printf 'stale: fixture-win actionable\n'
 exit 0
 SH
       ;;
+    delivered)
+      cat > "$dir/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+echo "$$" >> "$FM_HOME/state/arm-ran"
+printf 'watcher: attached pid=%s (beacon 2s)\n' "$$"
+printf 'watcher: closed pid=%s (wake delivered by its owning arm)\n' "$$"
+printf 'signal: task.status needs-decision: fixture\n'
+exit 0
+SH
+      ;;
     failed)
       cat > "$dir/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
@@ -303,6 +313,27 @@ test_actionable_close_rewakes_with_reason() {
   pass "auto-arm: actionable close translates to exactly one exit-2 rewake with reason"
 }
 
+# An attached cycle whose watcher delivered the wake leaves no watcher running,
+# so the chain must continue with an ordinary wake rewake. The false-alarm
+# banner is the specific failure this must not produce: it tells the model
+# supervision is down and to re-arm by hand, which is what put two competing
+# arms in the same home and made every close look like a failure.
+test_delivered_close_rewakes_as_an_ordinary_wake() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/delivered")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" delivered
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  expect_code 2 "$status" "a delivering close must exit 2 so the chain continues"
+  assert_contains "$out" "firstmate watcher wake" "a delivering close must use the ordinary wake banner"
+  assert_contains "$out" "signal: task.status needs-decision: fixture" "rewake must carry the delivered reason"
+  case "$out" in
+    *"watcher cycle FAILED"*) fail "a delivering close raised the supervision-down alarm: $out" ;;
+  esac
+  [ "$(epoch_outcome "$dir")" = rewake ] || fail "epoch must record outcome=rewake, got: $(epoch_outcome "$dir")"
+  pass "auto-arm: a delivering attached close continues the chain as an ordinary wake"
+}
+
 test_failed_close_rewakes_with_failure_banner() {
   local dir out status
   dir=$(make_primary_dir "$TMP_ROOT/failed")
@@ -399,6 +430,53 @@ test_active_in_marked_secondmate_home() {
   pass "auto-arm: active in a marked secondmate home"
 }
 
+# The auto-arm resolves session-lock ancestry BEFORE it may claim a home, and
+# bin/fm-turnend-guard.sh --claude allows a stop only if that claim lands inside
+# FM_CLAUDE_AUTOARM_SYNC_WAIT_MS (800ms by default). A per-hop ps/basename/grep
+# walk cost 2.5-3.3s on a loaded machine, so the guard blocked turns whose
+# auto-arm was working normally. Pin both halves of the fix: the fast path takes
+# a process-table snapshot at most once (proven by making ps fail outright), and
+# the portable fallback still resolves the same pid without /proc.
+test_ancestry_resolution_is_fork_frugal_and_bounded() {
+  local fakebin resolved fallback expected started elapsed
+  [ "$(uname)" = Linux ] || {
+    pass "fork-frugal ancestry resolution skipped on non-Linux host (no /proc fast path)"
+    return
+  }
+  fakebin=$(fm_fakebin "$TMP_ROOT/ancestry")
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+echo "ps must not be called on the /proc ancestry fast path" >&2
+exit 97
+SH
+  chmod +x "$fakebin/ps"
+
+  # The fake harness is the parent, so its own pid is the expected answer.
+  expected=$("$FAKE_CLAUDE" -c 'echo $$')
+  started=$(date +%s%N)
+  resolved=$(PATH="$fakebin:$PATH" "$FAKE_CLAUDE" -c '
+      . "$1"
+      printf "%s %s\n" "$$" "$(fm_harness_ancestry_pid)"
+    ' _ "$ROOT/bin/fm-session-lock-lib.sh" 2>&1) \
+    || fail "ancestry resolution failed on the /proc fast path: $resolved"
+  elapsed=$(( ($(date +%s%N) - started) / 1000000 ))
+  [ "${resolved% *}" = "${resolved#* }" ] \
+    || fail "/proc ancestry did not resolve the fake harness parent: $resolved"
+  [ -n "$expected" ] || fail "could not determine a fake harness pid"
+  # A 1s bound with no ps forks at all: the same generous margin the turn-end
+  # guard timing case uses, and 25x the measured /proc cost.
+  [ "$elapsed" -lt 1000 ] || fail "ancestry resolution took ${elapsed}ms, past the guard's cooperative window"
+
+  fallback=$(FM_PROC_ROOT_OVERRIDE="$TMP_ROOT/no-proc" "$FAKE_CLAUDE" -c '
+      . "$1"
+      printf "%s %s\n" "$$" "$(fm_harness_ancestry_pid)"
+    ' _ "$ROOT/bin/fm-session-lock-lib.sh" 2>&1) \
+    || fail "ancestry resolution failed on the portable ps fallback: $fallback"
+  [ "${fallback% *}" = "${fallback#* }" ] \
+    || fail "ps fallback did not resolve the fake harness parent: $fallback"
+  pass "session-lock ancestry resolves without ps on Linux and still falls back to a ps snapshot"
+}
+
 test_fm_lock_status_still_works_with_shared_lib() {
   local out
   out=$(FM_HOME="$TMP_ROOT/lock-status-home" bash "$ROOT/bin/fm-lock.sh" status 2>&1)
@@ -415,6 +493,7 @@ test_inert_when_afk
 test_stale_lock_recovery_preserves_afk_and_need_gates
 test_inert_when_fleet_idle
 test_actionable_close_rewakes_with_reason
+test_delivered_close_rewakes_as_an_ordinary_wake
 test_failed_close_rewakes_with_failure_banner
 test_clean_close_exits_silently
 test_arms_for_x_mode_poll_need_without_inflight
@@ -422,4 +501,5 @@ test_single_flight_admits_exactly_one_owner
 test_need_vanished_mid_cycle_closes_quietly
 test_afk_mid_cycle_suppresses_rewake
 test_active_in_marked_secondmate_home
+test_ancestry_resolution_is_fork_frugal_and_bounded
 test_fm_lock_status_still_works_with_shared_lib

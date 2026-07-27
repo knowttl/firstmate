@@ -31,12 +31,36 @@ triage_log() {
   fi
 }
 
+DELIVERY_RECEIPT="$STATE/.watch-cycle-delivery"
+
+# Publish the identity-bound receipt for this cycle's delivered wake.
+# An ATTACHED arm never sees this stdout - the reason goes to the arm that owns
+# this watcher as its child - so without a receipt it can only observe the lock
+# disappearing and would classify a successful delivering close as an
+# unexplained cycle end. bin/fm-watch-arm.sh is the only reader; it requires the
+# recorded pid, identity, and timestamp to match the cycle it was attached to,
+# so a stale or foreign receipt can never excuse a genuinely failed cycle.
+publish_delivery_receipt() {  # <reason>
+  local pid tmp
+  pid=${BASHPID:-$$}
+  tmp="$DELIVERY_RECEIPT.tmp.$pid"
+  printf 'watcher_pid=%s\tidentity=%s\tdelivered_at=%s\treason=%s\n' \
+    "$pid" \
+    "$(fm_pid_identity "$pid" 2>/dev/null || true)" \
+    "$(date +%s)" \
+    "$(printf '%s' "$1" | tr '\t\r\n' '   ')" \
+    > "$tmp" 2>/dev/null \
+    && mv -f "$tmp" "$DELIVERY_RECEIPT" 2>/dev/null
+  rm -f "$tmp" 2>/dev/null || true
+}
+
 # Exit after reporting one actionable wake. Tests override this callback.
 wake() {
   case "$1" in
     heartbeat*) echo $(( $(cat "$STATE/.heartbeat-streak" 2>/dev/null || echo 0) + 1 )) > "$STATE/.heartbeat-streak" ;;
     *) echo 0 > "$STATE/.heartbeat-streak" ;;
   esac
+  publish_delivery_receipt "$1"
   echo "$1"
   exit 0
 }

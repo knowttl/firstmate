@@ -11,23 +11,83 @@
 # Known harness command names; extend when a new adapter is verified.
 FM_HARNESS_RE='claude|codex|opencode|grok|kimi|^pi$'
 
+# Read one process's parent, command name, and full argument string into
+# FM_ROW_PPID / FM_ROW_COMM / FM_ROW_ARGS. Returns 1 when the pid is gone or
+# unreadable.
+#
+# Prefer /proc, which needs no fork at all; the ps snapshot is the portable
+# fallback for hosts without a Linux-format /proc (macOS). The snapshot is taken
+# at most once per shell because a single ps costs about half a second on a
+# loaded machine.
+FM_ROW_PPID=
+FM_ROW_COMM=
+FM_ROW_ARGS=
+FM_PROCESS_SNAPSHOT=
+fm_process_row() {  # <pid>
+  local pid=$1 proc_root stat_line rest arg row_pid found
+  FM_ROW_PPID=; FM_ROW_COMM=; FM_ROW_ARGS=
+  proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc}
+  if [ -r "$proc_root/$pid/stat" ]; then
+    IFS= read -r stat_line < "$proc_root/$pid/stat" 2>/dev/null || return 1
+    # "<pid> (<comm>) <state> <ppid> ...", where comm may contain spaces and
+    # parentheses: take it between the first "(" and the LAST ")".
+    FM_ROW_COMM=${stat_line#*(}
+    FM_ROW_COMM=${FM_ROW_COMM%)*}
+    rest=${stat_line##*)}
+    # After the comm delimiter the fields are "<state> <ppid> ...".
+    read -r _ FM_ROW_PPID _ <<< "$rest"
+    case "$FM_ROW_PPID" in
+      ''|*[!0-9]*) FM_ROW_PPID=; FM_ROW_COMM=; return 1 ;;
+    esac
+    if [ -r "$proc_root/$pid/cmdline" ]; then
+      while IFS= read -r -d '' arg; do
+        FM_ROW_ARGS="$FM_ROW_ARGS $arg"
+      done < "$proc_root/$pid/cmdline"
+    fi
+    return 0
+  fi
+  if [ -z "$FM_PROCESS_SNAPSHOT" ]; then
+    FM_PROCESS_SNAPSHOT=$(ps -A -o pid= -o ppid= -o comm= -o args= 2>/dev/null) || return 1
+    [ -n "$FM_PROCESS_SNAPSHOT" ] || return 1
+  fi
+  found=0
+  while read -r row_pid FM_ROW_PPID FM_ROW_COMM FM_ROW_ARGS; do
+    [ "$row_pid" = "$pid" ] || continue
+    found=1
+    break
+  done <<EOF
+$FM_PROCESS_SNAPSHOT
+EOF
+  [ "$found" -eq 1 ] || { FM_ROW_PPID=; FM_ROW_COMM=; FM_ROW_ARGS=; return 1; }
+  return 0
+}
+
 # Walk the current process ancestry (up to 8 hops) and print the first pid whose
 # command looks like a verified harness. The harness pid lives as long as the
 # session, unlike the transient subshell pid of any one tool call.
+#
+# One process-table snapshot, then a fork-free walk. Latency is load-bearing:
+# bin/fm-claude-stop-autoarm.sh resolves ancestry before it may claim a home,
+# and bin/fm-turnend-guard.sh --claude allows a stop only if that claim lands
+# inside FM_CLAUDE_AUTOARM_SYNC_WAIT_MS. Per-hop ps/basename/grep forks put the
+# walk at 2.5-3.3s on a loaded machine (measured 2026-07-27), far past that
+# window, so the guard blocked turns whose auto-arm was working normally.
 fm_harness_ancestry_pid() {
-  local pid=$$ comm args
+  local pid=$$
   for _ in 1 2 3 4 5 6 7 8; do
-    comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
-    args=$(ps -o args= -p "$pid" 2>/dev/null)
-    if printf '%s' "$(basename "$comm")" | grep -qE "$FM_HARNESS_RE"; then
+    fm_process_row "$pid" || return 1
+    if [[ ${FM_ROW_COMM##*/} =~ $FM_HARNESS_RE ]]; then
       echo "$pid"; return 0
     fi
     # Bare interpreter (e.g. node): match the harness name in its script path.
-    case "$comm" in
-      *node*|*python*) printf '%s' "$args" | grep -qE "$FM_HARNESS_RE" && { echo "$pid"; return 0; } ;;
+    case "$FM_ROW_COMM" in
+      *node*|*python*) [[ $FM_ROW_ARGS =~ $FM_HARNESS_RE ]] && { echo "$pid"; return 0; } ;;
     esac
-    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
-    [ -n "$pid" ] && [ "$pid" -gt 1 ] || return 1
+    pid=$FM_ROW_PPID
+    case "$pid" in
+      ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$pid" -gt 1 ] || return 1
   done
   return 1
 }
