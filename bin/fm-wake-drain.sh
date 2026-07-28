@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Atomically drain durable watcher wake records, optionally annotate validated
-# signal status keys after raw consumption commits, then assert liveness.
+# Atomically drain durable watcher wake records, then best-effort annotate
+# validated signal status keys after raw consumption commits.
+# Each annotation block prints the oldest unseen events that fit before the
+# latest line; later drains retry any explicitly marked remainder, and then the
+# drain asserts liveness.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -47,6 +50,9 @@ DRAIN_LOCK_HELD=true
 
 if [ ! -s "$FM_WAKE_QUEUE" ]; then
   : > "$FM_WAKE_QUEUE"
+  fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+  DRAIN_LOCK_HELD=false
+  (fm_wake_print_annotations '') || true
   assert_watcher_liveness
   exit 0
 fi

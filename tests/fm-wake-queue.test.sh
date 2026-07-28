@@ -345,6 +345,8 @@ SH
   if grep -E ': (empty|missing|malformed|unreadable)\.status:' "$out" >/dev/null; then
     fail "missing, unreadable, malformed, or empty status file produced an annotation"
   fi
+  [ ! -e "$state/.drain-retry-direct-missing" ] \
+    || fail "a never-read missing status file created a permanent retry marker"
   pass "bounded reads and per-item/global caps fail open with explicit truncation and omission markers"
 }
 
@@ -441,3 +443,190 @@ test_structural_signal_enrichment_preserves_raw_rows
 test_enrichment_caps_and_status_file_failures
 test_slow_annotation_does_not_block_append_and_deleted_file_fails_open
 test_interruption_before_and_after_raw_commit
+
+# Per-status-file drain cursor: a coalesced wake covering several appends must
+# surface every unseen event, not only the newest line.
+drain_case() {  # <dir> <state> <status-key> <out>
+  local state=$2 key=$3 out=$4
+  append_wake "$state" signal "$key" "signal: $key" || fail "cursor-case wake append failed"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "cursor-case drain failed"
+}
+
+test_multi_append_window_surfaces_every_unseen_event() {
+  local dir state first second
+  dir=$(make_case cursor-multi)
+  state="$dir/state"
+  first="$dir/first.out"
+  second="$dir/second.out"
+  printf 'working: started\n' > "$state/task.status"
+  drain_case "$dir" "$state" task.status "$first"
+  grep -F 'latest wake-EVENT observed at drain, not current state: task.status: working: started' "$first" >/dev/null \
+    || fail "first drain did not annotate the latest event"
+  [ -s "$state/.drain-cursor-task" ] || fail "first drain did not initialize the status read cursor"
+
+  # The reproduced defect: a needs-decision immediately followed by an unrelated
+  # resolved line, both landing between two watcher polls.
+  printf 'needs-decision: pick a serializer [key=d6-stage2]\n' >> "$state/task.status"
+  printf 'resolved: unrelated blocker cleared [key=other]\n' >> "$state/task.status"
+  drain_case "$dir" "$state" task.status "$second"
+  grep -F 'earlier unseen wake-EVENT since the last drain, not current state: task.status: needs-decision: pick a serializer [key=d6-stage2]' "$second" >/dev/null \
+    || fail "the earlier needs-decision event was hidden from the drain output"
+  grep -F 'latest wake-EVENT observed at drain, not current state: task.status: resolved: unrelated blocker cleared [key=other]' "$second" >/dev/null \
+    || fail "second drain did not annotate the latest event"
+  # The backlog reads oldest first, ahead of the latest-line annotation.
+  awk '/^wake annotation: earlier unseen/ { earlier = NR } /^wake annotation: latest/ { latest = NR }
+    END { exit !(earlier && latest && earlier < latest) }' "$second" \
+    || fail "the unseen backlog was not printed before the latest-line annotation"
+  pass "a coalesced multi-append window surfaces every unseen wake-EVENT"
+}
+
+test_first_drain_does_not_dump_status_history() {
+  local dir state out earlier_count
+  dir=$(make_case cursor-first-run)
+  state="$dir/state"
+  out="$dir/drain.out"
+  printf 'working: one\nworking: two\nworking: three\ndone: four\n' > "$state/task.status"
+  drain_case "$dir" "$state" task.status "$out"
+  earlier_count=$(grep -c '^wake annotation: earlier unseen' "$out" || true)
+  [ "$earlier_count" -eq 0 ] || fail "first run dumped $earlier_count historical events"
+  if grep -E '^wake annotation: task\.status: ([0-9]+ )?older unseen' "$out" >/dev/null; then
+    fail "first run reported an omitted-history marker"
+  fi
+  grep -F 'latest wake-EVENT observed at drain, not current state: task.status: done: four' "$out" >/dev/null \
+    || fail "first run did not annotate the latest event"
+  pass "a first drain initializes the cursor at EOF instead of dumping history"
+}
+
+test_unreadable_cursor_degrades_to_latest_only() {
+  local dir state out case_name cursor
+  for case_name in corrupt ahead; do
+    dir=$(make_case "cursor-$case_name")
+    state="$dir/state"
+    out="$dir/drain.out"
+    cursor="$state/.drain-cursor-task"
+    printf 'working: one\n' > "$state/task.status"
+    drain_case "$dir" "$state" task.status "$dir/init.out"
+    case "$case_name" in
+      corrupt) printf 'not-a-number\n' > "$cursor" ;;
+      ahead) printf '999999\n' > "$cursor" ;;
+    esac
+    printf 'needs-decision: hidden by a bad cursor\n' >> "$state/task.status"
+    printf 'done: latest\n' >> "$state/task.status"
+    drain_case "$dir" "$state" task.status "$out"
+    grep -F 'latest wake-EVENT observed at drain, not current state: task.status: done: latest' "$out" >/dev/null \
+      || fail "a $case_name cursor lost the latest-line annotation"
+    [ "$(grep -c '^wake annotation: earlier unseen' "$out" || true)" -eq 0 ] \
+      || fail "a $case_name cursor produced an unseen backlog instead of degrading"
+    grep -qxF "$(wc -c < "$state/task.status" | tr -d ' ')" "$cursor" \
+      || fail "a $case_name cursor was not re-initialized at EOF"
+  done
+  pass "a corrupt or past-EOF cursor degrades to the latest-line annotation and re-initializes"
+}
+
+test_unseen_backlog_is_chunked_with_an_explicit_marker() {
+  local dir state out i earlier_count
+  dir=$(make_case cursor-cap)
+  state="$dir/state"
+  out="$dir/drain.out"
+  printf 'working: start\n' > "$state/task.status"
+  drain_case "$dir" "$state" task.status "$dir/init.out"
+  i=1
+  while [ "$i" -le 30 ]; do
+    printf 'working: step %d\n' "$i" >> "$state/task.status"
+    i=$((i + 1))
+  done
+  drain_case "$dir" "$state" task.status "$out"
+  earlier_count=$(grep -c '^wake annotation: earlier unseen' "$out" || true)
+  [ "$earlier_count" -eq 20 ] || fail "expected the 20-line unseen-event cap, got $earlier_count"
+  grep -E '^wake annotation: deferred unseen wake-EVENTs \(global enrichment byte cap\): task\.status: 9 remain; retry scheduled$' "$out" >/dev/null \
+    || fail "the unseen-event cap did not emit an explicit remainder marker"
+  [ -e "$state/.drain-retry-direct-task" ] || fail "the capped unseen backlog lost its durable retry"
+  pass "an oversized unseen backlog is chunked with an explicit remainder marker"
+}
+
+test_failed_annotation_output_preserves_cursor_and_retry() {
+  local dir state cursor failed retry before
+  dir=$(make_case cursor-output-failure)
+  state="$dir/state"
+  cursor="$state/.drain-cursor-task"
+  failed="$dir/failed.out"
+  retry="$dir/retry.out"
+  printf 'working: start\n' > "$state/task.status"
+  drain_case "$dir" "$state" task.status "$dir/init.out"
+  before=$(cat "$cursor")
+  printf 'needs-decision: output must succeed first\n' >> "$state/task.status"
+  printf 'resolved: latest remains historical\n' >> "$state/task.status"
+  append_wake "$state" signal task.status "signal: task.status" || fail "failed-output wake append failed"
+  FM_STATE_OVERRIDE="$state" FM_WAKE_ENRICH_TEST_DELAY=1 "$DRAIN" | head -n 1 > "$failed"
+  grep -qxF "$before" "$cursor" || fail "failed annotation output advanced the status cursor"
+  [ -e "$state/.drain-retry-direct-task" ] || fail "failed annotation output lost its durable retry"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$retry" || fail "empty-queue annotation retry failed"
+  grep -F 'earlier unseen wake-EVENT since the last drain, not current state: task.status: needs-decision: output must succeed first' "$retry" >/dev/null \
+    || fail "failed annotation output was not retried on the next empty drain"
+  grep -qxF "$(wc -c < "$state/task.status" | tr -d ' ')" "$cursor" \
+    || fail "successful annotation retry did not advance the cursor to EOF"
+  pass "failed annotation output preserves the cursor and retries durably"
+}
+
+test_oversized_backlog_fully_drains() {
+  local dir state out all cursor size saved before i drain_count annotation_bytes
+  dir=$(make_case cursor-global-progress)
+  state="$dir/state"
+  all="$dir/all.out"
+  cursor="$state/.drain-cursor-task"
+  : > "$all"
+  printf 'working: start\n' > "$state/task.status"
+  drain_case "$dir" "$state" task.status "$dir/init.out"
+  i=1
+  while [ "$i" -le 21 ]; do
+    awk -v n="$i" 'BEGIN { printf "working: step %d ", n; for (j = 0; j < 3000; j++) printf "x"; printf "\n" }' >> "$state/task.status"
+    i=$((i + 1))
+  done
+  size=$(wc -c < "$state/task.status" | tr -d ' ')
+  drain_count=0
+  while [ "$drain_count" -lt 21 ]; do
+    out="$dir/drain-$drain_count.out"
+    if [ "$drain_count" -eq 0 ]; then
+      drain_case "$dir" "$state" task.status "$out"
+    else
+      FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "oversized annotation retry drain failed"
+    fi
+    cat "$out" >> "$all"
+    annotation_bytes=$(LC_ALL=C awk '/^wake annotation:/ { bytes += length($0) + 1 } END { print bytes + 0 }' "$out")
+    [ "$annotation_bytes" -le 8192 ] || fail "annotation output exceeded 8192 bytes ($annotation_bytes)"
+    if grep -qxF "$size" "$cursor"; then
+      [ ! -e "$state/.drain-retry-direct-task" ] || fail "exhausted oversized backlog retained its retry marker"
+      break
+    fi
+    [ -e "$state/.drain-retry-direct-task" ] || fail "partially drained oversized backlog lost its retry marker"
+    grep -E '^wake annotation: deferred unseen wake-EVENTs \(global enrichment byte cap\): task\.status: [1-9][0-9]* remain; retry scheduled$' "$out" >/dev/null \
+      || fail "an intermediate oversized-backlog drain hid its remaining event count"
+    if [ "$drain_count" -eq 0 ]; then
+      saved="$dir/task.status.saved"
+      before=$(cat "$cursor")
+      mv "$state/task.status" "$saved"
+      FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/transient.out" \
+        || fail "transient status-read failure made the drain fail"
+      [ -e "$state/.drain-retry-direct-task" ] || fail "transient status-read failure cleared the durable retry"
+      grep -qxF "$before" "$cursor" || fail "transient status-read failure advanced the cursor"
+      mv "$saved" "$state/task.status"
+    fi
+    drain_count=$((drain_count + 1))
+  done
+  grep -qxF "$size" "$cursor" || fail "oversized backlog did not drain to EOF"
+  i=1
+  while [ "$i" -le 21 ]; do
+    grep -F "wake-EVENT since the last drain, not current state: task.status: working: step $i " "$all" >/dev/null \
+      || grep -F "latest wake-EVENT observed at drain, not current state: task.status: working: step $i " "$all" >/dev/null \
+      || fail "oversized backlog never emitted event $i"
+    i=$((i + 1))
+  done
+  pass "a 21 by 2048-byte unseen backlog fully drains across successive drains"
+}
+
+test_multi_append_window_surfaces_every_unseen_event
+test_first_drain_does_not_dump_status_history
+test_unreadable_cursor_degrades_to_latest_only
+test_unseen_backlog_is_chunked_with_an_explicit_marker
+test_failed_annotation_output_preserves_cursor_and_retry
+test_oversized_backlog_fully_drains
