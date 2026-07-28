@@ -345,6 +345,8 @@ SH
   if grep -E ': (empty|missing|malformed|unreadable)\.status:' "$out" >/dev/null; then
     fail "missing, unreadable, malformed, or empty status file produced an annotation"
   fi
+  [ ! -e "$state/.drain-retry-direct-missing" ] \
+    || fail "a never-read missing status file created a permanent retry marker"
   pass "bounded reads and per-item/global caps fail open with explicit truncation and omission markers"
 }
 
@@ -566,11 +568,13 @@ test_failed_annotation_output_preserves_cursor_and_retry() {
 }
 
 test_oversized_block_makes_bounded_progress_and_retries() {
-  local dir state first second cursor before after size i earlier_count annotation_bytes
+  local dir state first transient second saved cursor before after size i earlier_count annotation_bytes
   dir=$(make_case cursor-global-progress)
   state="$dir/state"
   first="$dir/first.out"
+  transient="$dir/transient.out"
   second="$dir/second.out"
+  saved="$dir/task.status.saved"
   cursor="$state/.drain-cursor-task"
   printf 'working: start\n' > "$state/task.status"
   drain_case "$dir" "$state" task.status "$dir/init.out"
@@ -596,6 +600,11 @@ test_oversized_block_makes_bounded_progress_and_retries() {
   [ "$annotation_bytes" -le 8192 ] || fail "partial annotation output exceeded 8192 bytes ($annotation_bytes)"
   [ -e "$state/.drain-retry-direct-task" ] || fail "oversized annotation block lost its durable retry"
 
+  mv "$state/task.status" "$saved"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$transient" || fail "transient status-read failure made the drain fail"
+  [ -e "$state/.drain-retry-direct-task" ] || fail "transient status-read failure cleared the durable retry"
+  grep -qxF "$after" "$cursor" || fail "transient status-read failure advanced the cursor"
+  mv "$saved" "$state/task.status"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$second" || fail "oversized annotation retry drain failed"
   grep -F 'earlier unseen wake-EVENT since the last drain, not current state: task.status: working: step 5 ' "$second" >/dev/null \
     || fail "the deferred unseen-event remainder was not emitted on retry"

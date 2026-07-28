@@ -702,12 +702,6 @@ fm_wake_print_annotations_locked() {  # <deduped-raw-rows>
   local LC_ALL=C
 
   raw_manifest=$(fm_wake_annotation_manifest "$rows") || return 0
-  while IFS=$(printf '\t') read -r status_key mode; do
-    [ -n "$status_key" ] || continue
-    fm_wake_retry_register "$status_key" "$mode"
-  done <<EOF
-$raw_manifest
-EOF
   retry_manifest=$(fm_wake_retry_manifest) || retry_manifest=''
   manifest=$(printf '%s\n%s\n' "$raw_manifest" "$retry_manifest" | awk -F '\t' '
     {
@@ -744,9 +738,9 @@ EOF
     path="$STATE/$status_key"
     cursor=$(fm_wake_cursor_read "$status_key")
     if ! fm_wake_latest_event "$path" "$tail_bytes" "$cursor" "$earlier_cap"; then
-      fm_wake_retry_clear "$status_key"
       continue
     fi
+    fm_wake_retry_register "$status_key" "$mode"
 
     leading=''
     if [ "$FM_WAKE_EVENT_EARLIER_WINDOWED" = true ]; then
