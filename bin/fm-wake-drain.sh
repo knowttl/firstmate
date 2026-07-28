@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Atomically drain durable watcher wake records, optionally annotate validated
-# signal status keys after raw consumption commits, then assert liveness.
+# signal status keys - each one's unseen events since the last drain, then its
+# latest line - after raw consumption commits, then assert liveness.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
