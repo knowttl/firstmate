@@ -541,7 +541,72 @@ test_unseen_backlog_is_capped_with_an_explicit_marker() {
   pass "an oversized unseen backlog is capped with an explicit omission marker"
 }
 
+test_failed_annotation_output_preserves_cursor_and_retry() {
+  local dir state cursor failed retry before
+  dir=$(make_case cursor-output-failure)
+  state="$dir/state"
+  cursor="$state/.drain-cursor-task"
+  failed="$dir/failed.out"
+  retry="$dir/retry.out"
+  printf 'working: start\n' > "$state/task.status"
+  drain_case "$dir" "$state" task.status "$dir/init.out"
+  before=$(cat "$cursor")
+  printf 'needs-decision: output must succeed first\n' >> "$state/task.status"
+  printf 'resolved: latest remains historical\n' >> "$state/task.status"
+  append_wake "$state" signal task.status "signal: task.status" || fail "failed-output wake append failed"
+  FM_STATE_OVERRIDE="$state" FM_WAKE_ENRICH_TEST_DELAY=1 "$DRAIN" | head -n 1 > "$failed"
+  grep -qxF "$before" "$cursor" || fail "failed annotation output advanced the status cursor"
+  [ -e "$state/.drain-retry-direct-task" ] || fail "failed annotation output lost its durable retry"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$retry" || fail "empty-queue annotation retry failed"
+  grep -F 'earlier unseen wake-EVENT since the last drain, not current state: task.status: needs-decision: output must succeed first' "$retry" >/dev/null \
+    || fail "failed annotation output was not retried on the next empty drain"
+  grep -qxF "$(wc -c < "$state/task.status" | tr -d ' ')" "$cursor" \
+    || fail "successful annotation retry did not advance the cursor to EOF"
+  pass "failed annotation output preserves the cursor and retries durably"
+}
+
+test_oversized_block_makes_bounded_progress_and_retries() {
+  local dir state first second cursor before after size i earlier_count annotation_bytes
+  dir=$(make_case cursor-global-progress)
+  state="$dir/state"
+  first="$dir/first.out"
+  second="$dir/second.out"
+  cursor="$state/.drain-cursor-task"
+  printf 'working: start\n' > "$state/task.status"
+  drain_case "$dir" "$state" task.status "$dir/init.out"
+  before=$(cat "$cursor")
+  i=1
+  while [ "$i" -le 6 ]; do
+    awk -v n="$i" 'BEGIN { printf "working: step %d ", n; for (j = 0; j < 1550; j++) printf "x"; printf "\n" }' >> "$state/task.status"
+    i=$((i + 1))
+  done
+  size=$(wc -c < "$state/task.status" | tr -d ' ')
+  drain_case "$dir" "$state" task.status "$first"
+  after=$(cat "$cursor")
+  [ "$after" -gt "$before" ] && [ "$after" -lt "$size" ] \
+    || fail "oversized annotation block did not make bounded partial cursor progress"
+  earlier_count=$(grep -c '^wake annotation: earlier unseen' "$first" || true)
+  [ "$earlier_count" -gt 0 ] && [ "$earlier_count" -lt 4 ] \
+    || fail "oversized annotation block did not emit a bounded unseen-event prefix"
+  grep -F 'wake annotation: deferred unseen wake-EVENTs (global enrichment byte cap): task.status:' "$first" >/dev/null \
+    || fail "oversized annotation block did not expose its deferred remainder"
+  grep -E '^wake annotation: [1-9][0-9]* annotations omitted \(global enrichment byte cap\)$' "$first" >/dev/null \
+    || fail "oversized annotation block lost the existing global-cap marker"
+  annotation_bytes=$(LC_ALL=C awk '/^wake annotation:/ { bytes += length($0) + 1 } END { print bytes + 0 }' "$first")
+  [ "$annotation_bytes" -le 8192 ] || fail "partial annotation output exceeded 8192 bytes ($annotation_bytes)"
+  [ -e "$state/.drain-retry-direct-task" ] || fail "oversized annotation block lost its durable retry"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$second" || fail "oversized annotation retry drain failed"
+  grep -F 'earlier unseen wake-EVENT since the last drain, not current state: task.status: working: step 5 ' "$second" >/dev/null \
+    || fail "the deferred unseen-event remainder was not emitted on retry"
+  grep -qxF "$size" "$cursor" || fail "oversized annotation retry did not reach EOF"
+  [ ! -e "$state/.drain-retry-direct-task" ] || fail "completed oversized annotation retained its retry marker"
+  pass "an oversized annotation block makes bounded progress and retries its remainder"
+}
+
 test_multi_append_window_surfaces_every_unseen_event
 test_first_drain_does_not_dump_status_history
 test_unreadable_cursor_degrades_to_latest_only
 test_unseen_backlog_is_capped_with_an_explicit_marker
+test_failed_annotation_output_preserves_cursor_and_retry
+test_oversized_block_makes_bounded_progress_and_retries

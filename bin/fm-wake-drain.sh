@@ -48,6 +48,9 @@ DRAIN_LOCK_HELD=true
 
 if [ ! -s "$FM_WAKE_QUEUE" ]; then
   : > "$FM_WAKE_QUEUE"
+  fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+  DRAIN_LOCK_HELD=false
+  (fm_wake_print_annotations '') || true
   assert_watcher_liveness
   exit 0
 fi
