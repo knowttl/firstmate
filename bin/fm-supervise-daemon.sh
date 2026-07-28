@@ -1146,7 +1146,11 @@ inject_msg() {  # <message> [state]
   if [ "$verdict" = empty ]; then
     return 0  # Backend confirmed the submit.
   fi
-  log "inject failed: submit unconfirmed after $retries retries (verdict=$verdict, text may be in composer)"
+  if [ "$verdict" = busy-unqueued ]; then
+    log "inject failed: busy target consumed the text without queueing it (verdict=$verdict, composer is clear; retry when idle)"
+  else
+    log "inject failed: submit unconfirmed after $retries retries (verdict=$verdict, text may be in composer)"
+  fi
   return 1
 }
 

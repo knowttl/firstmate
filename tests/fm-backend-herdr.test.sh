@@ -2482,6 +2482,36 @@ test_send_text_submit_busy_pi_stale_steering_row_never_confirms() {
   pass "fm_backend_herdr_send_text_submit: an older identical steering row can never confirm the current send"
 }
 
+# Criterion: a multiline submission whose FIRST line is shorter than the queue
+# key bound must still confirm. Pi may render only that first line in the queued
+# row, so a key drawn from the whole re-flowed message could never match it. The
+# stale-row half of the case proves the shorter key stays bound to this send.
+test_send_text_submit_busy_pi_multiline_short_first_line_confirms() {
+  local dir log resp fb out msg case_id expected type_count
+  msg=$'Escalation\nqueue depth is 4 and the reviewer has been waiting 20 minutes'
+  for case_id in new-row stale-row-only; do
+    dir="$TMP_ROOT/submit-pi-busy-multiline-$case_id"; mkdir -p "$dir/responses"
+    log="$dir/log"; resp="$dir/responses"; : > "$log"
+    printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/2.out"
+    make_pi_busy_pane 'Escalation' 'Escalation' > "$resp/3.out"
+    if [ "$case_id" = new-row ]; then
+      expected=empty
+      make_pi_busy_pane '' 'Escalation' 'Escalation' > "$resp/5.out"
+    else
+      expected=busy-unqueued
+      make_pi_busy_pane '' 'Escalation' > "$resp/5.out"
+      make_pi_busy_pane '' 'Escalation' > "$resp/7.out"
+    fi
+    fb=$(make_herdr_fakebin "$dir")
+    out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+      bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "$1" 2 0.01 0.01' "$ROOT" "$msg" )
+    [ "$out" = "$expected" ] || fail "a multiline send with a short first line and a stale matching row must report '$expected' for case '$case_id', got '$out'"
+    type_count=$(grep -c $'\x1f''pane'$'\x1f''send-text' "$log")
+    [ "$type_count" -eq 1 ] || fail "case '$case_id' must type the message exactly once, typed $type_count time(s)"
+  done
+  pass "fm_backend_herdr_send_text_submit: a multiline send whose first line is shorter than the queue key bound confirms from a new queued row only"
+}
+
 test_send_text_submit_busy_pi_unreadable_pane_stays_unknown() {
   local dir log resp fb out
   dir="$TMP_ROOT/submit-pi-busy-unreadable"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -3376,6 +3406,7 @@ test_send_text_submit_busy_pi_steering_entry_confirms
 test_send_text_submit_busy_pi_late_render_confirms_without_retyping
 test_send_text_submit_busy_pi_unqueued_command_is_not_delivery
 test_send_text_submit_busy_pi_stale_steering_row_never_confirms
+test_send_text_submit_busy_pi_multiline_short_first_line_confirms
 test_send_text_submit_busy_pi_unreadable_pane_stays_unknown
 test_send_text_submit_idle_pi_keeps_native_agent_state_path
 test_send_text_submit_busy_non_pi_keeps_composer_fallback

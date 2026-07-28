@@ -1932,11 +1932,19 @@ fm_backend_herdr_pi_queue_norm() {  # <text>
 }
 
 # fm_backend_herdr_pi_queue_key: the bounded normalized prefix of <text> that a
-# queued row must start with to be attributed to this send. Empty when the text
-# carries no comparable content, which disables queue confirmation entirely.
+# queued row must start with to be attributed to this send. Only the first
+# non-blank LINE of the text feeds the key: a queued row that renders just that
+# line and one that re-flows the whole message both START with it, so the key
+# stays valid under either rendering. Empty when the text carries no comparable
+# content, which disables queue confirmation entirely.
 fm_backend_herdr_pi_queue_key() {  # <text>
-  local norm
-  norm=$(fm_backend_herdr_pi_queue_norm "$1")
+  local line norm=""
+  while IFS= read -r line; do
+    norm=$(fm_backend_herdr_pi_queue_norm "$line")
+    [ -z "$norm" ] || break
+  done <<EOF
+$1
+EOF
   printf '%s' "${norm:0:$FM_BACKEND_HERDR_PI_QUEUE_KEY_CHARS}"
 }
 
@@ -2041,9 +2049,11 @@ fm_backend_herdr_composer_state() {  # <target> -> empty|pending|unknown
      && [ "$FM_BACKEND_HERDR_PI_PAIR_LINE" -gt "$generic_line" ] \
      && [ "$generic_line" -lt "$FM_BACKEND_HERDR_PI_PAIR_OPEN_LINE" ]; then
     identity=$(fm_backend_herdr_agent_identity_raw "$session" "$pane" 2>/dev/null || true)
-    IFS=$'\t' read -r agent agent_status <<EOF
-$identity
-EOF
+    # Split on the first tab explicitly: `read` with a tab IFS would drop the
+    # empty agent field of a pane that reports a status but no agent name.
+    agent=${identity%%$'\t'*}
+    agent_status=${identity#*$'\t'}
+    [ "$identity" != "$agent_status" ] || agent_status=""
     case "$agent:$agent_status" in
       pi:idle|pi:done|pi:blocked)
         if [ "$FM_BACKEND_HERDR_PI_PAIR_VALID" -eq 1 ]; then
