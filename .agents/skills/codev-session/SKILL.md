@@ -1,6 +1,7 @@
 ---
 name: codev-session
-description: Run a collaborative co-development session where the captain and a dedicated worker iteratively engineer and refine an artifact - a rule, feature set, config, query, prompt, or similar - against a real project dataset, evidence-first each round. Use when the captain invokes /codev-session or asks for a collaborative co-development, joint feature-engineering, interactive exploration, or "develop and iterate together against the examples" session. Scout-shaped: it dispatches a read-only session worker, drives an evidence-then-artifact working loop on a review board, and converges to a design report; it never ships code, since implementation is a separate captain authorization.
+description: >-
+  Run a collaborative co-development session where the captain and a dedicated worker iteratively engineer and refine an artifact - a rule, feature set, config, query, prompt, or similar - against a real project dataset, evidence-first each round. Use when the captain invokes /codev-session or asks for a collaborative co-development, joint feature-engineering, interactive exploration, or "develop and iterate together against the examples" session. Scout-shaped: it dispatches a read-only session worker, drives an evidence-then-artifact working loop on a review board, and converges to a design report; it never ships code, since implementation is a separate captain authorization.
 user-invocable: true
 metadata:
   internal: true
