@@ -523,7 +523,7 @@ test_unreadable_cursor_degrades_to_latest_only() {
   pass "a corrupt or past-EOF cursor degrades to the latest-line annotation and re-initializes"
 }
 
-test_unseen_backlog_is_capped_with_an_explicit_marker() {
+test_unseen_backlog_is_chunked_with_an_explicit_marker() {
   local dir state out i earlier_count
   dir=$(make_case cursor-cap)
   state="$dir/state"
@@ -538,9 +538,10 @@ test_unseen_backlog_is_capped_with_an_explicit_marker() {
   drain_case "$dir" "$state" task.status "$out"
   earlier_count=$(grep -c '^wake annotation: earlier unseen' "$out" || true)
   [ "$earlier_count" -eq 20 ] || fail "expected the 20-line unseen-event cap, got $earlier_count"
-  grep -E '^wake annotation: task\.status: [1-9][0-9]* older unseen wake-EVENTs omitted \(unseen-event cap\)' "$out" >/dev/null \
-    || fail "the unseen-event cap did not emit an explicit omission marker"
-  pass "an oversized unseen backlog is capped with an explicit omission marker"
+  grep -E '^wake annotation: deferred unseen wake-EVENTs \(global enrichment byte cap\): task\.status: 9 remain; retry scheduled$' "$out" >/dev/null \
+    || fail "the unseen-event cap did not emit an explicit remainder marker"
+  [ -e "$state/.drain-retry-direct-task" ] || fail "the capped unseen backlog lost its durable retry"
+  pass "an oversized unseen backlog is chunked with an explicit remainder marker"
 }
 
 test_failed_annotation_output_preserves_cursor_and_retry() {
@@ -567,51 +568,65 @@ test_failed_annotation_output_preserves_cursor_and_retry() {
   pass "failed annotation output preserves the cursor and retries durably"
 }
 
-test_oversized_block_is_deferred_atomically() {
-  local dir state first transient second saved cursor before i annotation_bytes
-  dir=$(make_case cursor-global-atomic)
+test_oversized_backlog_fully_drains() {
+  local dir state out all cursor size saved before i drain_count annotation_bytes
+  dir=$(make_case cursor-global-progress)
   state="$dir/state"
-  first="$dir/first.out"
-  transient="$dir/transient.out"
-  second="$dir/second.out"
-  saved="$dir/task.status.saved"
+  all="$dir/all.out"
   cursor="$state/.drain-cursor-task"
+  : > "$all"
   printf 'working: start\n' > "$state/task.status"
   drain_case "$dir" "$state" task.status "$dir/init.out"
-  before=$(cat "$cursor")
   i=1
-  while [ "$i" -le 6 ]; do
-    awk -v n="$i" 'BEGIN { printf "working: step %d ", n; for (j = 0; j < 1550; j++) printf "x"; printf "\n" }' >> "$state/task.status"
+  while [ "$i" -le 21 ]; do
+    awk -v n="$i" 'BEGIN { printf "working: step %d ", n; for (j = 0; j < 3000; j++) printf "x"; printf "\n" }' >> "$state/task.status"
     i=$((i + 1))
   done
-  drain_case "$dir" "$state" task.status "$first"
-  grep -qxF "$before" "$cursor" || fail "oversized annotation block advanced its cursor without being emitted whole"
-  [ "$(grep -c '^wake annotation: earlier unseen' "$first" || true)" -eq 0 ] \
-    || fail "oversized annotation block emitted a partial unseen-event backlog"
-  grep -E '^wake annotation: [1-9][0-9]* annotations omitted \(global enrichment byte cap\)$' "$first" >/dev/null \
-    || fail "oversized annotation block lost the existing global-cap marker"
-  annotation_bytes=$(LC_ALL=C awk '/^wake annotation:/ { bytes += length($0) + 1 } END { print bytes + 0 }' "$first")
-  [ "$annotation_bytes" -le 8192 ] || fail "annotation output exceeded 8192 bytes ($annotation_bytes)"
-  [ -e "$state/.drain-retry-direct-task" ] || fail "oversized annotation block lost its durable retry"
-
-  mv "$state/task.status" "$saved"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$transient" || fail "transient status-read failure made the drain fail"
-  [ -e "$state/.drain-retry-direct-task" ] || fail "transient status-read failure cleared the durable retry"
-  grep -qxF "$before" "$cursor" || fail "transient status-read failure advanced the cursor"
-  mv "$saved" "$state/task.status"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$second" || fail "oversized annotation retry drain failed"
-  grep -qxF "$before" "$cursor" || fail "oversized annotation retry advanced its cursor without being emitted whole"
-  [ "$(grep -c '^wake annotation: earlier unseen' "$second" || true)" -eq 0 ] \
-    || fail "oversized annotation retry emitted a partial unseen-event backlog"
-  grep -E '^wake annotation: [1-9][0-9]* annotations omitted \(global enrichment byte cap\)$' "$second" >/dev/null \
-    || fail "oversized annotation retry lost the existing global-cap marker"
-  [ -e "$state/.drain-retry-direct-task" ] || fail "oversized annotation retry was not preserved"
-  pass "an oversized annotation block is deferred whole with its cursor unchanged"
+  size=$(wc -c < "$state/task.status" | tr -d ' ')
+  drain_count=0
+  while [ "$drain_count" -lt 21 ]; do
+    out="$dir/drain-$drain_count.out"
+    if [ "$drain_count" -eq 0 ]; then
+      drain_case "$dir" "$state" task.status "$out"
+    else
+      FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "oversized annotation retry drain failed"
+    fi
+    cat "$out" >> "$all"
+    annotation_bytes=$(LC_ALL=C awk '/^wake annotation:/ { bytes += length($0) + 1 } END { print bytes + 0 }' "$out")
+    [ "$annotation_bytes" -le 8192 ] || fail "annotation output exceeded 8192 bytes ($annotation_bytes)"
+    if grep -qxF "$size" "$cursor"; then
+      [ ! -e "$state/.drain-retry-direct-task" ] || fail "exhausted oversized backlog retained its retry marker"
+      break
+    fi
+    [ -e "$state/.drain-retry-direct-task" ] || fail "partially drained oversized backlog lost its retry marker"
+    grep -E '^wake annotation: deferred unseen wake-EVENTs \(global enrichment byte cap\): task\.status: [1-9][0-9]* remain; retry scheduled$' "$out" >/dev/null \
+      || fail "an intermediate oversized-backlog drain hid its remaining event count"
+    if [ "$drain_count" -eq 0 ]; then
+      saved="$dir/task.status.saved"
+      before=$(cat "$cursor")
+      mv "$state/task.status" "$saved"
+      FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/transient.out" \
+        || fail "transient status-read failure made the drain fail"
+      [ -e "$state/.drain-retry-direct-task" ] || fail "transient status-read failure cleared the durable retry"
+      grep -qxF "$before" "$cursor" || fail "transient status-read failure advanced the cursor"
+      mv "$saved" "$state/task.status"
+    fi
+    drain_count=$((drain_count + 1))
+  done
+  grep -qxF "$size" "$cursor" || fail "oversized backlog did not drain to EOF"
+  i=1
+  while [ "$i" -le 21 ]; do
+    grep -F "wake-EVENT since the last drain, not current state: task.status: working: step $i " "$all" >/dev/null \
+      || grep -F "latest wake-EVENT observed at drain, not current state: task.status: working: step $i " "$all" >/dev/null \
+      || fail "oversized backlog never emitted event $i"
+    i=$((i + 1))
+  done
+  pass "a 21 by 2048-byte unseen backlog fully drains across successive drains"
 }
 
 test_multi_append_window_surfaces_every_unseen_event
 test_first_drain_does_not_dump_status_history
 test_unreadable_cursor_degrades_to_latest_only
-test_unseen_backlog_is_capped_with_an_explicit_marker
+test_unseen_backlog_is_chunked_with_an_explicit_marker
 test_failed_annotation_output_preserves_cursor_and_retry
-test_oversized_block_is_deferred_atomically
+test_oversized_backlog_fully_drains

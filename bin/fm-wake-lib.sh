@@ -563,112 +563,115 @@ FM_WAKE_EVENT_SIZE=0
 FM_WAKE_EVENT_EARLIER=
 FM_WAKE_EVENT_EARLIER_COUNT=0
 FM_WAKE_EVENT_EARLIER_DROPPED=0
-FM_WAKE_EVENT_EARLIER_WINDOWED=false
-fm_wake_latest_event() {  # <validated-status-path> <tail-byte-cap> <cursor|-1> <earlier-line-cap>
-  local path=$1 tail_bytes=$2 cursor=$3 earlier_cap=$4
-  local result size start chunk parsed header rest line_number skip_first window_start
+fm_wake_latest_event() {  # <validated-status-path> <tail-byte-cap> <cursor|-1> <earlier-line-cap> <line-byte-cap>
+  local path=$1 tail_bytes=$2 cursor=$3 earlier_cap=$4 line_bytes=$5
+  local result header rest
   FM_WAKE_EVENT_LINE=
   FM_WAKE_EVENT_TRUNCATED=false
   FM_WAKE_EVENT_SIZE=0
   FM_WAKE_EVENT_EARLIER=
   FM_WAKE_EVENT_EARLIER_COUNT=0
   FM_WAKE_EVENT_EARLIER_DROPPED=0
-  FM_WAKE_EVENT_EARLIER_WINDOWED=false
-  # One bounded read serves both the latest line and the unseen backlog: the read
-  # starts at the cursor when that is inside the tail window, and at the window
-  # otherwise, so status-file volume still cannot turn a drain into an unbounded
-  # context read.
+  # One descriptor scan serves both the latest line and the unseen backlog. Its
+  # returned context is bounded to the first capped backlog records plus the
+  # latest record, even when the cursor lies before the tail window.
   result=$(perl -MFcntl=:DEFAULT -e '
-    my ($path, $limit, $cursor) = @ARGV;
+    my ($path, $tail_limit, $cursor, $event_limit, $line_limit) = @ARGV;
     sysopen(my $file, $path, O_RDONLY | O_NOFOLLOW) or exit 1;
     my @stat = stat $file or exit 1;
     exit 1 unless -f _;
     my $size = $stat[7];
     exit 1 unless $size =~ /\A\d+\z/;
-    my $start = $size > $limit ? $size - $limit : 0;
-    if ($cursor =~ /\A\d+\z/ && $cursor > $start && $cursor < $size) {
-      $start = $cursor;
+    my $usable_cursor = $cursor =~ /\A\d+\z/ && $cursor >= 0 && $cursor < $size;
+    if (!$usable_cursor) {
+      my $start = $size > $tail_limit ? $size - $tail_limit : 0;
+      seek($file, $start, 0) or exit 1;
+      my $remaining = $size - $start;
+      my $chunk = "";
+      while ($remaining > 0) {
+        my $read = read($file, my $buffer, $remaining);
+        exit 1 unless defined $read;
+        last unless $read;
+        $chunk .= $buffer;
+        $remaining -= $read;
+      }
+      my @lines = split /\n/, $chunk, -1;
+      my ($latest, $latest_index);
+      for (my $i = 0; $i <= $#lines; $i++) {
+        next unless $lines[$i] =~ /[^[:space:]]/;
+        $latest = $lines[$i];
+        $latest_index = $i;
+      }
+      exit 1 unless defined $latest;
+      $latest =~ tr/\t\r/  /;
+      $latest = substr($latest, 0, $line_limit);
+      my $truncated = $start > 0 && $latest_index == 0 ? 1 : 0;
+      print "$size\t0\t0\t$truncated\n$latest\n" or exit 1;
+      exit 0;
     }
-    seek($file, $start, 0) or exit 1;
-    printf "%s\t%s\t", $size, $start or exit 1;
-    my $remaining = $size - $start;
+
+    seek($file, $cursor, 0) or exit 1;
+    my $remaining = $size - $cursor;
+    my ($line, $line_has_content) = ("", 0);
+    my ($position, $event_count, $latest) = ($cursor, 0, "");
+    my @earlier;
     while ($remaining > 0) {
-      my $read = read($file, my $buffer, $remaining);
+      my $want = $remaining > 8192 ? 8192 : $remaining;
+      my $read = read($file, my $buffer, $want);
       exit 1 unless defined $read;
       last unless $read;
-      print $buffer or exit 1;
       $remaining -= $read;
-    }
-  ' "$path" "$tail_bytes" "$cursor" 2>/dev/null) || return 1
-  size=${result%%$'\t'*}
-  result=${result#*$'\t'}
-  start=${result%%$'\t'*}
-  chunk=${result#*$'\t'}
-  case "$size" in ''|*[!0-9]*) return 1 ;; esac
-  case "$start" in ''|*[!0-9]*) return 1 ;; esac
-  [ -n "$chunk" ] || return 1
-  window_start=0
-  [ "$size" -le "$tail_bytes" ] || window_start=$((size - tail_bytes))
-  # A cursor past EOF means the file was truncated or replaced since the last
-  # drain; re-initialize rather than reporting a bogus unseen window.
-  [ "$cursor" -le "$size" ] || cursor=-1
-  # The read began at the window rather than at the cursor, so anything before it
-  # is unseen but unreadable here, and the window's first line may be a fragment.
-  skip_first=0
-  if [ "$cursor" -ge 0 ] && [ "$cursor" -lt "$start" ]; then
-    FM_WAKE_EVENT_EARLIER_WINDOWED=true
-    skip_first=1
-  fi
-  # A cursor at or past EOF, or no usable cursor at all, means there is no unseen
-  # backlog to report: annotate the latest line only, with no omission markers.
-  [ "$cursor" -ge 0 ] || earlier_cap=-1
-  [ "$cursor" -lt "$size" ] || earlier_cap=-1
-  parsed=$(printf '%s' "$chunk" | LC_ALL=C awk -v cap="$earlier_cap" -v skip="$skip_first" -v position="$start" '
-    {
-      position += length($0) + 1
-    }
-    /[^[:space:]]/ {
-      line = $0
-      gsub(/[\t\r]/, " ", line)
-      lines[++n] = line
-      num[n] = NR
-      ends[n] = position
-    }
-    END {
-      if (!n) exit 0
-      first = skip ? 2 : 1
-      last = n - 1
-      dropped = 0
-      count = last - first + 1
-      if (count < 0) count = 0
-      if (cap < 0) {
-        count = 0
-      } else if (count > cap) {
-        dropped = count - cap
-        first = last - cap + 1
-        count = cap
+      for my $character (split //, $buffer) {
+        $position++;
+        if ($character eq "\n") {
+          if ($line_has_content) {
+            $line =~ tr/\t\r/  /;
+            $event_count++;
+            push @earlier, [$position, $line]
+              if $event_count <= $event_limit + 1;
+            $latest = $line;
+          }
+          ($line, $line_has_content) = ("", 0);
+          next;
+        }
+        $line_has_content = 1 if $character =~ /[^[:space:]]/;
+        $line .= $character if length($line) < $line_limit;
       }
-      printf "%d\t%d\t%d\n", num[n], count, dropped
-      printf "%s\n", lines[n]
-      if (count > 0) for (i = first; i <= last; i++) printf "%d\t%s\n", ends[i], lines[i]
     }
-  ') || return 1
-  [ -n "$parsed" ] || return 1
-  header=${parsed%%$'\n'*}
-  rest=${parsed#*$'\n'}
-  line_number=${header%%$'\t'*}
+    if ($line_has_content) {
+      $line =~ tr/\t\r/  /;
+      $event_count++;
+      push @earlier, [$size, $line] if $event_count <= $event_limit + 1;
+      $latest = $line;
+    }
+    exit 1 unless $event_count;
+    my $earlier_total = $event_count - 1;
+    my $count = $earlier_total > $event_limit ? $event_limit : $earlier_total;
+    my $dropped = $earlier_total - $count;
+    print "$size\t$count\t$dropped\t0\n$latest\n" or exit 1;
+    for (my $i = 0; $i < $count; $i++) {
+      print "$earlier[$i][0]\t$earlier[$i][1]\n" or exit 1;
+    }
+  ' "$path" "$tail_bytes" "$cursor" "$earlier_cap" "$line_bytes" 2>/dev/null) || return 1
+  header=${result%%$'\n'*}
+  rest=${result#*$'\n'}
+  FM_WAKE_EVENT_SIZE=${header%%$'\t'*}
   header=${header#*$'\t'}
   FM_WAKE_EVENT_EARLIER_COUNT=${header%%$'\t'*}
-  FM_WAKE_EVENT_EARLIER_DROPPED=${header#*$'\t'}
+  header=${header#*$'\t'}
+  FM_WAKE_EVENT_EARLIER_DROPPED=${header%%$'\t'*}
+  FM_WAKE_EVENT_TRUNCATED=${header#*$'\t'}
+  case "$FM_WAKE_EVENT_SIZE" in ''|*[!0-9]*) return 1 ;; esac
+  case "$FM_WAKE_EVENT_EARLIER_COUNT" in ''|*[!0-9]*) return 1 ;; esac
+  case "$FM_WAKE_EVENT_EARLIER_DROPPED" in ''|*[!0-9]*) return 1 ;; esac
+  case "$FM_WAKE_EVENT_TRUNCATED" in
+    0) FM_WAKE_EVENT_TRUNCATED=false ;;
+    1) FM_WAKE_EVENT_TRUNCATED=true ;;
+    *) return 1 ;;
+  esac
   FM_WAKE_EVENT_LINE=${rest%%$'\n'*}
   if [ "$FM_WAKE_EVENT_EARLIER_COUNT" -gt 0 ]; then
     FM_WAKE_EVENT_EARLIER=${rest#*$'\n'}
-  fi
-  FM_WAKE_EVENT_SIZE=$size
-  # Only a window-determined start can cut the latest line; a cursor start always
-  # lands on the line boundary a previous drain recorded.
-  if [ "$start" -eq "$window_start" ] && [ "$window_start" -gt 0 ] && [ "$line_number" -eq 1 ]; then
-    FM_WAKE_EVENT_TRUNCATED=true
   fi
 }
 
@@ -687,13 +690,15 @@ fm_wake_append_line() {  # <block-var-name> <line> <item-byte-cap>
 # Print supplemental drain-time context only after the caller has committed the
 # raw queue consumption and released the append lock. The limits are constants,
 # so status-file volume cannot turn a drain into an unbounded context read.
-# Each status file contributes one block: its unseen-event backlog since the last
-# drain that annotated it, oldest first, then the existing latest-line
-# annotation. Its cursor advances only after the complete block is emitted.
+# Each status file contributes one fitting block: the oldest unseen events that
+# fit the live remaining budget, an explicit remainder marker when needed, then
+# the existing latest-line annotation. Its cursor advances only through events
+# that were emitted.
 fm_wake_print_annotations_locked() {  # <deduped-raw-rows>
   local rows=$1 raw_manifest retry_manifest manifest status_key mode path prefix line suffix bytes
-  local cursor block leading earlier_block latest_block earlier_end earlier_line
-  local pending='' cursor_target
+  local cursor block earlier_block latest_block earlier_end earlier_line
+  local pending='' disposition cursor_target available candidate_line candidate
+  local defer_block deferred emitted_count emitted_end partial_block
   local output='' used=0 omitted=0 read_omitted=0 annotation_marker marker_reserve=192
   local tail_bytes=8192 item_bytes=2048 global_bytes=8192 read_cap=8 reads=0
   local earlier_cap=20
@@ -735,18 +740,11 @@ fm_wake_print_annotations_locked() {  # <deduped-raw-rows>
     reads=$((reads + 1))
     path="$STATE/$status_key"
     cursor=$(fm_wake_cursor_read "$status_key")
-    if ! fm_wake_latest_event "$path" "$tail_bytes" "$cursor" "$earlier_cap"; then
+    if ! fm_wake_latest_event "$path" "$tail_bytes" "$cursor" "$earlier_cap" "$item_bytes"; then
       continue
     fi
     fm_wake_retry_register "$status_key" "$mode"
 
-    leading=''
-    if [ "$FM_WAKE_EVENT_EARLIER_WINDOWED" = true ]; then
-      fm_wake_append_line leading "wake annotation: $status_key: older unseen wake-EVENTs fell outside the drain read window; read state/$status_key in full" "$item_bytes"
-    fi
-    if [ "$FM_WAKE_EVENT_EARLIER_DROPPED" -gt 0 ]; then
-      fm_wake_append_line leading "wake annotation: $status_key: $FM_WAKE_EVENT_EARLIER_DROPPED older unseen wake-EVENTs omitted (unseen-event cap); read state/$status_key in full" "$item_bytes"
-    fi
     earlier_block=''
     if [ "$FM_WAKE_EVENT_EARLIER_COUNT" -gt 0 ]; then
       while IFS=$(printf '\t') read -r earlier_end earlier_line; do
@@ -767,27 +765,65 @@ EOF2
     latest_block=''
     fm_wake_append_line latest_block "$line$suffix" "$item_bytes"
 
-    block="$leading$earlier_block$latest_block"
+    block="$earlier_block$latest_block"
     bytes=${#block}
-    if [ $((used + bytes + marker_reserve)) -le "$global_bytes" ]; then
+    if [ "$FM_WAKE_EVENT_EARLIER_DROPPED" -eq 0 ] \
+      && [ $((used + bytes + marker_reserve)) -le "$global_bytes" ]; then
       output="$output$block"
       used=$((used + bytes))
+      disposition=complete
       cursor_target=$FM_WAKE_EVENT_SIZE
-      pending="$pending$status_key	$cursor_target
+      pending="$pending$status_key	$cursor_target	$disposition
 "
       continue
     fi
 
     omitted=$((omitted + 1))
+    [ "$FM_WAKE_EVENT_EARLIER_COUNT" -gt 0 ] || continue
+    available=$((global_bytes - marker_reserve - used))
+    partial_block=''
+    emitted_count=0
+    emitted_end=
+    while IFS=$(printf '\t') read -r earlier_end earlier_line; do
+      [ -n "$earlier_line" ] || continue
+      candidate_line=''
+      fm_wake_append_line candidate_line "wake annotation: earlier unseen wake-EVENT since the last drain, not current state: $status_key: $earlier_line" "$item_bytes"
+      deferred=$((FM_WAKE_EVENT_EARLIER_COUNT + FM_WAKE_EVENT_EARLIER_DROPPED - emitted_count - 1))
+      defer_block=''
+      if [ "$deferred" -gt 0 ]; then
+        fm_wake_append_line defer_block "wake annotation: deferred unseen wake-EVENTs (global enrichment byte cap): $status_key: $deferred remain; retry scheduled" "$item_bytes"
+      fi
+      candidate="$partial_block$candidate_line$defer_block$latest_block"
+      [ "${#candidate}" -le "$available" ] || break
+      partial_block="$partial_block$candidate_line"
+      emitted_count=$((emitted_count + 1))
+      emitted_end=$earlier_end
+    done <<EOF2
+$FM_WAKE_EVENT_EARLIER
+EOF2
+
+    [ "$emitted_count" -gt 0 ] || continue
+    deferred=$((FM_WAKE_EVENT_EARLIER_COUNT + FM_WAKE_EVENT_EARLIER_DROPPED - emitted_count))
+    defer_block=''
+    if [ "$deferred" -gt 0 ]; then
+      fm_wake_append_line defer_block "wake annotation: deferred unseen wake-EVENTs (global enrichment byte cap): $status_key: $deferred remain; retry scheduled" "$item_bytes"
+    fi
+    block="$partial_block$defer_block$latest_block"
+    output="$output$block"
+    used=$((used + ${#block}))
+    disposition=partial
+    cursor_target=$emitted_end
+    pending="$pending$status_key	$cursor_target	$disposition
+"
   done <<EOF
 $manifest
 EOF
 
   printf '%s' "$output" || return 1
-  while IFS=$(printf '\t') read -r status_key cursor_target; do
+  while IFS=$(printf '\t') read -r status_key cursor_target disposition; do
     [ -n "$status_key" ] || continue
     fm_wake_cursor_write "$status_key" "$cursor_target"
-    fm_wake_retry_clear "$status_key"
+    [ "$disposition" != complete ] || fm_wake_retry_clear "$status_key"
   done <<EOF
 $pending
 EOF

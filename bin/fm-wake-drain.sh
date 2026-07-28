@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Atomically drain durable watcher wake records, then best-effort annotate
 # validated signal status keys after raw consumption commits.
-# A complete annotation block prints the bounded unseen-event backlog since its
-# last successful emission before the latest line; later drains retry blocks that
-# could not be emitted whole, and then the drain asserts liveness.
+# Each annotation block prints the oldest unseen events that fit before the
+# latest line; later drains retry any explicitly marked remainder, and then the
+# drain asserts liveness.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
