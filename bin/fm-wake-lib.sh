@@ -689,13 +689,11 @@ fm_wake_append_line() {  # <block-var-name> <line> <item-byte-cap>
 # so status-file volume cannot turn a drain into an unbounded context read.
 # Each status file contributes one block: its unseen-event backlog since the last
 # drain that annotated it, oldest first, then the existing latest-line
-# annotation. Its cursor advances only through content that the drain emitted or
-# represented with an explicit omission marker.
+# annotation. Its cursor advances only after the complete block is emitted.
 fm_wake_print_annotations_locked() {  # <deduped-raw-rows>
   local rows=$1 raw_manifest retry_manifest manifest status_key mode path prefix line suffix bytes
   local cursor block leading earlier_block latest_block earlier_end earlier_line
-  local pending='' disposition cursor_target available candidate_line candidate
-  local defer_block deferred emitted_count emitted_end partial_block
+  local pending='' cursor_target
   local output='' used=0 omitted=0 read_omitted=0 annotation_marker marker_reserve=192
   local tail_bytes=8192 item_bytes=2048 global_bytes=8192 read_cap=8 reads=0
   local earlier_cap=20
@@ -774,59 +772,22 @@ EOF2
     if [ $((used + bytes + marker_reserve)) -le "$global_bytes" ]; then
       output="$output$block"
       used=$((used + bytes))
-      disposition=complete
       cursor_target=$FM_WAKE_EVENT_SIZE
-      pending="$pending$status_key	$cursor_target	$disposition
+      pending="$pending$status_key	$cursor_target
 "
       continue
     fi
 
     omitted=$((omitted + 1))
-    [ "$FM_WAKE_EVENT_EARLIER_COUNT" -gt 0 ] || continue
-    available=$((global_bytes - marker_reserve - used))
-    partial_block=''
-    emitted_count=0
-    emitted_end=
-    while IFS=$(printf '\t') read -r earlier_end earlier_line; do
-      [ -n "$earlier_line" ] || continue
-      candidate_line=''
-      fm_wake_append_line candidate_line "wake annotation: earlier unseen wake-EVENT since the last drain, not current state: $status_key: $earlier_line" "$item_bytes"
-      deferred=$((FM_WAKE_EVENT_EARLIER_COUNT - emitted_count - 1))
-      defer_block=''
-      if [ "$deferred" -gt 0 ]; then
-        fm_wake_append_line defer_block "wake annotation: deferred unseen wake-EVENTs (global enrichment byte cap): $status_key: $deferred remain; retry scheduled" "$item_bytes"
-      fi
-      candidate="$leading$partial_block$candidate_line$defer_block$latest_block"
-      [ "${#candidate}" -le "$available" ] || break
-      partial_block="$partial_block$candidate_line"
-      emitted_count=$((emitted_count + 1))
-      emitted_end=$earlier_end
-    done <<EOF2
-$FM_WAKE_EVENT_EARLIER
-EOF2
-
-    deferred=$((FM_WAKE_EVENT_EARLIER_COUNT - emitted_count))
-    defer_block=''
-    fm_wake_append_line defer_block "wake annotation: deferred unseen wake-EVENTs (global enrichment byte cap): $status_key: $deferred remain; retry scheduled" "$item_bytes"
-    block="$leading$partial_block$defer_block$latest_block"
-    [ "${#block}" -le "$available" ] || continue
-    output="$output$block"
-    used=$((used + ${#block}))
-    if [ "$emitted_count" -gt 0 ]; then
-      disposition=partial
-      cursor_target=$emitted_end
-      pending="$pending$status_key	$cursor_target	$disposition
-"
-    fi
   done <<EOF
 $manifest
 EOF
 
   printf '%s' "$output" || return 1
-  while IFS=$(printf '\t') read -r status_key cursor_target disposition; do
+  while IFS=$(printf '\t') read -r status_key cursor_target; do
     [ -n "$status_key" ] || continue
     fm_wake_cursor_write "$status_key" "$cursor_target"
-    [ "$disposition" != complete ] || fm_wake_retry_clear "$status_key"
+    fm_wake_retry_clear "$status_key"
   done <<EOF
 $pending
 EOF

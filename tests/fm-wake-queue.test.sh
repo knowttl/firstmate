@@ -567,9 +567,9 @@ test_failed_annotation_output_preserves_cursor_and_retry() {
   pass "failed annotation output preserves the cursor and retries durably"
 }
 
-test_oversized_block_makes_bounded_progress_and_retries() {
-  local dir state first transient second saved cursor before after size i earlier_count annotation_bytes
-  dir=$(make_case cursor-global-progress)
+test_oversized_block_is_deferred_atomically() {
+  local dir state first transient second saved cursor before i annotation_bytes
+  dir=$(make_case cursor-global-atomic)
   state="$dir/state"
   first="$dir/first.out"
   transient="$dir/transient.out"
@@ -584,33 +584,29 @@ test_oversized_block_makes_bounded_progress_and_retries() {
     awk -v n="$i" 'BEGIN { printf "working: step %d ", n; for (j = 0; j < 1550; j++) printf "x"; printf "\n" }' >> "$state/task.status"
     i=$((i + 1))
   done
-  size=$(wc -c < "$state/task.status" | tr -d ' ')
   drain_case "$dir" "$state" task.status "$first"
-  after=$(cat "$cursor")
-  [ "$after" -gt "$before" ] && [ "$after" -lt "$size" ] \
-    || fail "oversized annotation block did not make bounded partial cursor progress"
-  earlier_count=$(grep -c '^wake annotation: earlier unseen' "$first" || true)
-  [ "$earlier_count" -gt 0 ] && [ "$earlier_count" -lt 4 ] \
-    || fail "oversized annotation block did not emit a bounded unseen-event prefix"
-  grep -F 'wake annotation: deferred unseen wake-EVENTs (global enrichment byte cap): task.status:' "$first" >/dev/null \
-    || fail "oversized annotation block did not expose its deferred remainder"
+  grep -qxF "$before" "$cursor" || fail "oversized annotation block advanced its cursor without being emitted whole"
+  [ "$(grep -c '^wake annotation: earlier unseen' "$first" || true)" -eq 0 ] \
+    || fail "oversized annotation block emitted a partial unseen-event backlog"
   grep -E '^wake annotation: [1-9][0-9]* annotations omitted \(global enrichment byte cap\)$' "$first" >/dev/null \
     || fail "oversized annotation block lost the existing global-cap marker"
   annotation_bytes=$(LC_ALL=C awk '/^wake annotation:/ { bytes += length($0) + 1 } END { print bytes + 0 }' "$first")
-  [ "$annotation_bytes" -le 8192 ] || fail "partial annotation output exceeded 8192 bytes ($annotation_bytes)"
+  [ "$annotation_bytes" -le 8192 ] || fail "annotation output exceeded 8192 bytes ($annotation_bytes)"
   [ -e "$state/.drain-retry-direct-task" ] || fail "oversized annotation block lost its durable retry"
 
   mv "$state/task.status" "$saved"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$transient" || fail "transient status-read failure made the drain fail"
   [ -e "$state/.drain-retry-direct-task" ] || fail "transient status-read failure cleared the durable retry"
-  grep -qxF "$after" "$cursor" || fail "transient status-read failure advanced the cursor"
+  grep -qxF "$before" "$cursor" || fail "transient status-read failure advanced the cursor"
   mv "$saved" "$state/task.status"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$second" || fail "oversized annotation retry drain failed"
-  grep -F 'earlier unseen wake-EVENT since the last drain, not current state: task.status: working: step 5 ' "$second" >/dev/null \
-    || fail "the deferred unseen-event remainder was not emitted on retry"
-  grep -qxF "$size" "$cursor" || fail "oversized annotation retry did not reach EOF"
-  [ ! -e "$state/.drain-retry-direct-task" ] || fail "completed oversized annotation retained its retry marker"
-  pass "an oversized annotation block makes bounded progress and retries its remainder"
+  grep -qxF "$before" "$cursor" || fail "oversized annotation retry advanced its cursor without being emitted whole"
+  [ "$(grep -c '^wake annotation: earlier unseen' "$second" || true)" -eq 0 ] \
+    || fail "oversized annotation retry emitted a partial unseen-event backlog"
+  grep -E '^wake annotation: [1-9][0-9]* annotations omitted \(global enrichment byte cap\)$' "$second" >/dev/null \
+    || fail "oversized annotation retry lost the existing global-cap marker"
+  [ -e "$state/.drain-retry-direct-task" ] || fail "oversized annotation retry was not preserved"
+  pass "an oversized annotation block is deferred whole with its cursor unchanged"
 }
 
 test_multi_append_window_surfaces_every_unseen_event
@@ -618,4 +614,4 @@ test_first_drain_does_not_dump_status_history
 test_unreadable_cursor_degrades_to_latest_only
 test_unseen_backlog_is_capped_with_an_explicit_marker
 test_failed_annotation_output_preserves_cursor_and_retry
-test_oversized_block_makes_bounded_progress_and_retries
+test_oversized_block_is_deferred_atomically
