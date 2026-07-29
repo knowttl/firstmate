@@ -288,6 +288,11 @@ The decision persists per path in `~/.pi/agent/trust.json`, so later spawns in t
 The extension must listen for pi's `turn_end` event, not `agent_end`, so the watcher wakes after each completed turn instead of only when the whole agent run exits.
 Pi sets `PI_CODING_AGENT=true` for its children; this is its harness-detection env marker.
 
+**Busy-input behavior (verified 2026-07-28).**
+A Pi target that is mid-turn accepts an ordinary instruction: it enters Pi's visible steering queue as a de-emphasized `Steering: ` row above the composer, the composer clears immediately, and Pi acts on the entry after the current turn.
+Other input, such as a built-in command Pi runs or refuses while busy, is consumed without ever becoming a queued row, so it is not delivered as an instruction and must be resent once the target is idle.
+`docs/herdr-backend.md` "Current transport behavior" owns how submit confirmation distinguishes the two and what `fm-send` reports for each.
+
 **Primary-session guard fact (verified 2026-07-09, Pi 0.80.5).**
 The firstmate PRIMARY's own `.pi/extensions/fm-primary-turnend-guard.ts` listens for logical-run `agent_settled`, not per-tool-loop `turn_end`, and uses `pi.sendUserMessage(..., { deliverAs: "followUp" })` to force one guarded follow-up when `bin/fm-turnend-guard.sh` returns 2.
 Without `deliverAs: "followUp"`, Pi rejects the send while the agent is still processing.

@@ -1898,6 +1898,113 @@ fm_backend_herdr_agent_identity_raw() {  # <session> <pane> -> <agent>\t<status>
   printf '%s' "$out" | jq -r '[.result.agent.agent // "", .result.agent.agent_status // ""] | @tsv' 2>/dev/null
 }
 
+# --- Pi's queued-input evidence (busy submit confirmation) -------------------
+# Pi accepts ordinary input WHILE it is generating: the submission is added to
+# its steering/follow-up queue and rendered as a de-emphasized entry row above
+# the composer, and the composer is cleared. Native agent-state cannot confirm
+# that submit (the pane was already `working` before Enter and stays `working`
+# after it), and the composer is empty either way, so the queue rows are the
+# only positive evidence that THIS send landed.
+# Deliberately generic: any input Pi queues while busy confirms, and any input
+# Pi consumes without queueing (a built-in command it runs or refuses
+# immediately) does not. Nothing here inspects which command was sent or what
+# Pi printed about it.
+# The capture window must cover the queue rows, Pi's status row, and the
+# composer region beneath them, so it is wider than the composer-only window.
+FM_BACKEND_HERDR_PI_QUEUE_LINES=${FM_BACKEND_HERDR_PI_QUEUE_LINES:-40}
+# Entry prefixes Pi renders for queued input, matched after ANSI stripping and
+# trimming. Extend this if Pi adds another queued-input row shape.
+FM_BACKEND_HERDR_PI_QUEUE_PREFIXES=${FM_BACKEND_HERDR_PI_QUEUE_PREFIXES:-'Steering: |Follow-up: '}
+# How much of the sent text has to match a queued row. Pi truncates a long
+# queued row to the pane width, so the comparison is a bounded prefix of the
+# whitespace-normalized text rather than the whole message.
+FM_BACKEND_HERDR_PI_QUEUE_KEY_CHARS=${FM_BACKEND_HERDR_PI_QUEUE_KEY_CHARS:-24}
+
+# fm_backend_herdr_pi_queue_norm: collapse newlines, tabs, and runs of spaces to
+# single spaces and trim, so a captured row and the sent text are compared in
+# the same shape (Pi re-flows what it renders).
+fm_backend_herdr_pi_queue_norm() {  # <text>
+  local norm
+  norm=$(printf '%s' "$1" | tr '\n\t' '  ' | tr -s ' ')
+  norm="${norm#"${norm%%[![:space:]]*}"}"
+  norm="${norm%"${norm##*[![:space:]]}"}"
+  printf '%s' "$norm"
+}
+
+# fm_backend_herdr_pi_queue_key: the bounded normalized prefix of <text> that a
+# queued row must start with to be attributed to this send. Only the first
+# non-blank LINE of the text feeds the key: a queued row that renders just that
+# line and one that re-flows the whole message both START with it, so the key
+# stays valid under either rendering. Empty when the text carries no comparable
+# content, which disables queue confirmation entirely.
+fm_backend_herdr_pi_queue_key() {  # <text>
+  local line norm=""
+  while IFS= read -r line; do
+    norm=$(fm_backend_herdr_pi_queue_norm "$line")
+    [ -z "$norm" ] || break
+  done <<EOF
+$1
+EOF
+  printf '%s' "${norm:0:$FM_BACKEND_HERDR_PI_QUEUE_KEY_CHARS}"
+}
+
+# fm_backend_herdr_pi_queue_count: how many queued-input rows in <capture>
+# carry text starting with <key>. Counting (rather than testing presence) is
+# what binds confirmation to the CURRENT send: an identical older queued row is
+# already in the pre-Enter count, so only an INCREASE proves a new entry.
+fm_backend_herdr_pi_queue_count() {  # <capture> <key>
+  local cap=$1 key=$2 line plain body count=0 prefix
+  [ -n "$key" ] || { printf '0'; return 0; }
+  while IFS= read -r line; do
+    plain=$(fm_backend_herdr_strip_ansi "$line")
+    plain=$(fm_backend_herdr_pi_queue_norm "$plain")
+    body=""
+    while IFS= read -r prefix; do
+      [ -n "$prefix" ] || continue
+      case "$plain" in
+        "$prefix"*) body=${plain#"$prefix"} ; break ;;
+      esac
+    done <<EOF
+$(printf '%s' "$FM_BACKEND_HERDR_PI_QUEUE_PREFIXES" | tr '|' '\n')
+EOF
+    [ -n "$body" ] || continue
+    case "$body" in
+      "$key"*) count=$((count + 1)) ;;
+    esac
+  done <<EOF
+$cap
+EOF
+  printf '%s' "$count"
+}
+
+# fm_backend_herdr_pi_busy_submit_state: classify one post-Enter observation of
+# a Pi target that was already generating when this send started.
+#   queued   - a new queued row carries this send's text: delivered.
+#   pending  - the composer still holds real text: this Enter was swallowed,
+#              so the caller retries Enter (never retypes).
+#   consumed - the composer is clear but nothing was queued: Pi took the input
+#              and handled it immediately instead of queueing it, so delivery
+#              of the intended instruction is NOT confirmed.
+#   unknown  - the pane or its composer structure could not be read.
+fm_backend_herdr_pi_busy_submit_state() {  # <target> <key> <count-before>
+  local target=$1 key=$2 before=$3 cap now stripped composer
+  cap=$(fm_backend_herdr_capture_ansi "$target" "$FM_BACKEND_HERDR_PI_QUEUE_LINES" 2>/dev/null) \
+    || { printf 'unknown'; return 0; }
+  now=$(fm_backend_herdr_pi_queue_count "$cap" "$key")
+  if [ "$now" -gt "$before" ]; then printf 'queued'; return 0; fi
+  fm_backend_herdr_pi_composer_find "$cap"
+  if [ "$FM_BACKEND_HERDR_PI_PAIR_FOUND" -ne 1 ] || [ "$FM_BACKEND_HERDR_PI_PAIR_VALID" -ne 1 ]; then
+    printf 'unknown'; return 0
+  fi
+  stripped=$(printf '%s\n' "$FM_BACKEND_HERDR_PI_CONTENT" | fm_composer_strip_ghost)
+  composer=$(fm_composer_classify_content 1 "$stripped" "$FM_BACKEND_HERDR_IDLE_RE")
+  case "$composer" in
+    empty) printf 'consumed' ;;
+    pending) printf 'pending' ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
 fm_backend_herdr_composer_state() {  # <target> -> empty|pending|unknown
   local target=$1 session pane cap line trimmed found=0 shape="" raw_match="" bordered=0 stripped
   local identity agent agent_status row=0 generic_line=0
@@ -1942,9 +2049,11 @@ fm_backend_herdr_composer_state() {  # <target> -> empty|pending|unknown
      && [ "$FM_BACKEND_HERDR_PI_PAIR_LINE" -gt "$generic_line" ] \
      && [ "$generic_line" -lt "$FM_BACKEND_HERDR_PI_PAIR_OPEN_LINE" ]; then
     identity=$(fm_backend_herdr_agent_identity_raw "$session" "$pane" 2>/dev/null || true)
-    IFS=$'\t' read -r agent agent_status <<EOF
-$identity
-EOF
+    # Split on the first tab explicitly: `read` with a tab IFS would drop the
+    # empty agent field of a pane that reports a status but no agent name.
+    agent=${identity%%$'\t'*}
+    agent_status=${identity#*$'\t'}
+    [ "$identity" != "$agent_status" ] || agent_status=""
     case "$agent:$agent_status" in
       pi:idle|pi:done|pi:blocked)
         if [ "$FM_BACKEND_HERDR_PI_PAIR_VALID" -eq 1 ]; then
@@ -2057,23 +2166,57 @@ EOF
 #     re-invokes this function from scratch with the same text after seeing
 #     an error, which is a human/escalation decision, not an automatic
 #     retry).
-# Echoes empty|pending|unknown|send-failed, a subset of the proof-carrying
-# submit vocabulary. Empty means confirmed submitted for every backend; how
-# each backend confirms it is an internal decision, and herdr's is no longer
-# literally "the composer read empty".
+#
+# Busy Pi baseline (2026-07-28 incident): a Pi target that is already
+# generating ACCEPTS an ordinary instruction into its queue and clears its
+# composer, so neither native agent-state (already `working` before Enter, still
+# `working` after it) nor composer content can see that the submit landed - the
+# send read as unconfirmed even though the instruction was delivered and later
+# acted on. Such a target is therefore confirmed from Pi's own queued-input
+# rows (fm_backend_herdr_pi_busy_submit_state), bound to THIS send by a new
+# matching entry rather than by any row that was already on screen. The
+# distinction is transport-generic: input Pi queues is delivered, and input Pi
+# consumes immediately without queueing (a built-in command it runs or refuses
+# while busy) is reported as busy-unqueued, never as delivery. Nothing on this
+# path inspects which command was sent or what Pi printed about it.
+# Residual, deliberately conservative: a target that leaves the busy baseline
+# before Enter, or whose queued entry is consumed before the confirming read,
+# reports non-delivery rather than risking a false success.
+#
+# Echoes empty|pending|busy-unqueued|unknown|send-failed, a subset of the
+# proof-carrying submit vocabulary. Empty means confirmed submitted for every
+# backend; how each backend confirms it is an internal decision, and herdr's is
+# no longer literally "the composer read empty".
 fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
   local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep
+  local identity agent raw_status pi_busy=0 queue_key queue_before cap consumed=0
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
   fm_backend_herdr_send_literal "$target" "$text" || { printf 'send-failed'; return 0; }
   sleep "$settle"
-  baseline=$(fm_backend_herdr_classify_submit_agent_status \
-    "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")")
+  identity=$(fm_backend_herdr_agent_identity_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null || true)
+  # Split on the first tab explicitly: `read` with a tab IFS would drop the
+  # empty agent field of a pane that reports a status but no agent name.
+  agent=${identity%%$'\t'*}
+  raw_status=${identity#*$'\t'}
+  [ "$identity" != "$raw_status" ] || raw_status=""
+  baseline=$(fm_backend_herdr_classify_submit_agent_status "$raw_status")
   confirm_sleep=$(fm_backend_herdr_submit_confirm_budget "$sleep_s")
+  if [ "$baseline" != idle ] && [ "$agent" = pi ] && [ "$raw_status" = working ]; then
+    queue_key=$(fm_backend_herdr_pi_queue_key "$text")
+    if [ -n "$queue_key" ] \
+      && cap=$(fm_backend_herdr_capture_ansi "$target" "$FM_BACKEND_HERDR_PI_QUEUE_LINES" 2>/dev/null); then
+      queue_before=$(fm_backend_herdr_pi_queue_count "$cap" "$queue_key")
+      pi_busy=1
+    fi
+  fi
   while :; do
     fm_backend_herdr_send_key "$target" Enter || true
     if [ "$baseline" = idle ]; then
       verdict=$(fm_backend_herdr_wait_for_working "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" \
         "$confirm_sleep" "$FM_BACKEND_HERDR_SUBMIT_POLLS")
+    elif [ "$pi_busy" = 1 ]; then
+      sleep "$sleep_s"
+      verdict=$(fm_backend_herdr_pi_busy_submit_state "$target" "$queue_key" "$queue_before")
     else
       sleep "$sleep_s"
       verdict=$(fm_backend_herdr_composer_state "$target")
@@ -2081,10 +2224,19 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
     case "$verdict" in
       busy) printf 'empty'; return 0 ;;
       empty) printf 'empty'; return 0 ;;
+      queued) printf 'empty'; return 0 ;;
       unknown) printf 'unknown'; return 0 ;;
+      # A consumed submission may still be a queue row that has not rendered
+      # yet, so the attempt is retried; a retried Enter on the cleared composer
+      # submits nothing and cannot duplicate the text.
+      consumed) consumed=1 ;;
+      *) consumed=0 ;;
     esac
     i=$((i + 1))
-    [ "$i" -lt "$retries" ] || { printf 'pending'; return 0; }
+    if [ "$i" -ge "$retries" ]; then
+      if [ "$consumed" = 1 ]; then printf 'busy-unqueued'; else printf 'pending'; fi
+      return 0
+    fi
   done
 }
 

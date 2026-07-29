@@ -203,8 +203,9 @@ the operational prefix lets firstmate distinguish it from a real captain message
   primitive reports `empty` as its caller-facing success verdict.
   For tmux that verdict means the shared-ghost-aware and border-aware composer
   cleared.
-  For herdr's normal idle-baseline path it means native agent-state observed a real turn start; herdr uses the ANSI-aware structural classifier for the pre-injection composer guard and fallback paths.
+  For herdr's normal idle-baseline path it means native agent-state observed a real turn start; herdr uses the ANSI-aware structural classifier for the pre-injection composer guard and its remaining fallback paths.
   This lets ghost-only or bordered-empty composers count as empty where a composer read is the active confirmation signal.
+  An already generating Pi target is confirmed from Pi's queued-input rows instead, and input such a target consumed without queueing fails the inject with a distinct retry-when-idle log line, per [`docs/herdr-backend.md`](../../../docs/herdr-backend.md#current-transport-behavior).
 - **Marker strip** - `strip_injection_marker` removes the current operational
   prefix or legacy bare marker before classification or relay, so the digest
   text firstmate sees is clean.

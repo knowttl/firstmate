@@ -2362,6 +2362,229 @@ test_send_text_submit_unknown_on_capture_failure() {
   pass "fm_backend_herdr_send_text_submit: reports 'unknown' when the post-Enter agent-get read fails (never retries past an unreadable target)"
 }
 
+# --- send_text_submit: a Pi target that is ALREADY generating ---------------
+# Live-verified incident (2026-07-28, real Pi on herdr 0.7.5): an ordinary
+# instruction sent to a Pi agent that was mid-response was ACCEPTED into Pi's
+# steering queue and acted on, but fm-send reported it as unsubmitted. The
+# busy baseline could only fall back to composer content, and a busy Pi's
+# composer is cleared by the very submission being confirmed, so no signal on
+# that path could see the delivery. Confirmation now comes from Pi's own queued
+# entry rows, bound to this send by a NEW matching entry.
+# Fixture shape below is the real Pi-on-herdr rendering: dim truecolor queue
+# rows above a dim status row, then the composer between two blue separators.
+make_pi_busy_pane() {  # <composer-text> [queued-entry ...]
+  local composer=$1 entry
+  shift
+  printf '\x1b[0m\x1b[38;2;212;212;212mtranscript row above the queue\x1b[0m\n'
+  for entry in "$@"; do
+    printf '\x1b[0m\x1b[38;2;102;102;102m Steering: %s\x1b[0m\n' "$entry"
+  done
+  [ "$#" -eq 0 ] \
+    || printf '\x1b[0m\x1b[38;2;102;102;102m \xe2\x86\xb3 ctrl+g to edit all queued messages\x1b[0m\n'
+  printf ' \x1b[0m\x1b[38;2;138;190;183m\xe2\xa0\xb4\x1b[0m \x1b[0m\x1b[38;2;128;128;128mWorking (medium effort)...\x1b[0m\n'
+  printf '\x1b[0m\x1b[38;2;129;162;190m─────────────────────────────────────────────────────\x1b[0m\n'
+  if [ -n "$composer" ]; then
+    printf '\x1b[0m%s\x1b[7m \x1b[0m\n' "$composer"
+  else
+    printf '\x1b[0m\x1b[7m \x1b[0m                                        \n'
+  fi
+  printf '\x1b[0m\x1b[38;2;129;162;190m─────────────────────────────────────────────────────\x1b[0m\n'
+  printf '\x1b[0m\x1b[38;2;102;102;102m~/synthetic-primary (main)\x1b[0m\n'
+}
+
+test_send_text_submit_busy_pi_steering_entry_confirms() {
+  local dir log resp fb out enter_count type_count
+  dir="$TMP_ROOT/submit-pi-busy-queued"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  # 1: send-text  2: agent get -> pi working (busy baseline)  3: pre-Enter
+  # capture (text still in the composer, nothing queued)  4: send-keys enter
+  # 5: post-Enter capture (composer cleared, the text is queued)
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/2.out"
+  make_pi_busy_pane 'reply with just OK' > "$resp/3.out"
+  make_pi_busy_pane '' 'reply with just OK' > "$resp/5.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "reply with just OK" 3 0.01 0.01' "$ROOT" )
+  [ "$out" = empty ] || fail "an instruction accepted into a busy Pi's steering queue must confirm as delivered, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "a queued instruction must not provoke a retry, sent $enter_count Enter(s)"
+  type_count=$(grep -c $'\x1f''pane'$'\x1f''send-text' "$log")
+  [ "$type_count" -eq 1 ] || fail "the message must be typed exactly once, typed $type_count time(s)"
+  pass "fm_backend_herdr_send_text_submit: an instruction accepted into a busy Pi's steering queue confirms as delivered"
+}
+
+test_send_text_submit_busy_pi_late_render_confirms_without_retyping() {
+  local dir log resp fb out type_count enter_count
+  dir="$TMP_ROOT/submit-pi-busy-late"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/2.out"
+  make_pi_busy_pane 'reply with just OK' > "$resp/3.out"
+  # The composer is already cleared but the queue row has not rendered yet.
+  make_pi_busy_pane '' > "$resp/5.out"
+  make_pi_busy_pane '' 'reply with just OK' > "$resp/7.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "reply with just OK" 3 0.01 0.01' "$ROOT" )
+  [ "$out" = empty ] || fail "a queue row that renders on a later observation must still confirm, got '$out'"
+  type_count=$(grep -c $'\x1f''pane'$'\x1f''send-text' "$log")
+  [ "$type_count" -eq 1 ] || fail "a retried Enter must never retype the message, typed $type_count time(s)"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 2 ] || fail "expected exactly one retried Enter before the queue row appeared, sent $enter_count"
+  pass "fm_backend_herdr_send_text_submit: a late-rendering queue row confirms on a retried Enter without ever retyping the message"
+}
+
+# Generic command-rejection coverage: Pi runs (or refuses) a built-in command
+# immediately instead of queueing it, clearing the composer either way. The
+# adapter must not read that cleared composer as delivery, and must not learn
+# any single command name or warning sentence to reach that verdict - both the
+# observed `/reload` reproduction and a synthetic command behave identically.
+test_send_text_submit_busy_pi_unqueued_command_is_not_delivery() {
+  local dir log resp fb out type_count enter_count command
+  for command in '/reload' '/synthetic-busy-command'; do
+    dir="$TMP_ROOT/submit-pi-busy-unqueued-${command#/}"; mkdir -p "$dir/responses"
+    log="$dir/log"; resp="$dir/responses"; : > "$log"
+    printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/2.out"
+    make_pi_busy_pane "$command" > "$resp/3.out"
+    make_pi_busy_pane '' > "$resp/5.out"
+    make_pi_busy_pane '' > "$resp/7.out"
+    fb=$(make_herdr_fakebin "$dir")
+    out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+      bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "$1" 2 0.01 0.01' "$ROOT" "$command" )
+    [ "$out" = busy-unqueued ] || fail "'$command' consumed by a busy Pi without being queued must not read as delivered, got '$out'"
+    type_count=$(grep -c $'\x1f''pane'$'\x1f''send-text' "$log")
+    [ "$type_count" -eq 1 ] || fail "'$command' must be typed exactly once, typed $type_count time(s)"
+    enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+    [ "$enter_count" -eq 2 ] || fail "'$command' should exhaust its Enter retries, sent $enter_count"
+  done
+  pass "fm_backend_herdr_send_text_submit: input a busy Pi consumes without queueing reports busy-unqueued for any command, never delivery"
+}
+
+# Criterion: confirmation is bound to THIS send. An identical queue row left
+# over from an earlier send is already present before Enter, so it can never
+# stand in for a new one.
+test_send_text_submit_busy_pi_stale_steering_row_never_confirms() {
+  local dir log resp fb out case_id post_composer expected
+  for case_id in composer-holds-text composer-cleared; do
+    dir="$TMP_ROOT/submit-pi-busy-stale-$case_id"; mkdir -p "$dir/responses"
+    log="$dir/log"; resp="$dir/responses"; : > "$log"
+    if [ "$case_id" = composer-holds-text ]; then
+      post_composer='reply with just OK'; expected=pending
+    else
+      post_composer=''; expected=busy-unqueued
+    fi
+    printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/2.out"
+    make_pi_busy_pane 'reply with just OK' 'reply with just OK' > "$resp/3.out"
+    make_pi_busy_pane "$post_composer" 'reply with just OK' > "$resp/5.out"
+    make_pi_busy_pane "$post_composer" 'reply with just OK' > "$resp/7.out"
+    fb=$(make_herdr_fakebin "$dir")
+    out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+      bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "reply with just OK" 2 0.01 0.01' "$ROOT" )
+    [ "$out" = "$expected" ] || fail "a pre-existing identical queue row must not confirm case '$case_id', expected '$expected', got '$out'"
+  done
+  pass "fm_backend_herdr_send_text_submit: an older identical steering row can never confirm the current send"
+}
+
+# Criterion: a multiline submission whose FIRST line is shorter than the queue
+# key bound must still confirm. Pi may render only that first line in the queued
+# row, so a key drawn from the whole re-flowed message could never match it. The
+# stale-row half of the case proves the shorter key stays bound to this send.
+test_send_text_submit_busy_pi_multiline_short_first_line_confirms() {
+  local dir log resp fb out msg case_id expected type_count
+  msg=$'Escalation\nqueue depth is 4 and the reviewer has been waiting 20 minutes'
+  for case_id in new-row stale-row-only; do
+    dir="$TMP_ROOT/submit-pi-busy-multiline-$case_id"; mkdir -p "$dir/responses"
+    log="$dir/log"; resp="$dir/responses"; : > "$log"
+    printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/2.out"
+    make_pi_busy_pane 'Escalation' 'Escalation' > "$resp/3.out"
+    if [ "$case_id" = new-row ]; then
+      expected=empty
+      make_pi_busy_pane '' 'Escalation' 'Escalation' > "$resp/5.out"
+    else
+      expected=busy-unqueued
+      make_pi_busy_pane '' 'Escalation' > "$resp/5.out"
+      make_pi_busy_pane '' 'Escalation' > "$resp/7.out"
+    fi
+    fb=$(make_herdr_fakebin "$dir")
+    out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+      bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "$1" 2 0.01 0.01' "$ROOT" "$msg" )
+    [ "$out" = "$expected" ] || fail "a multiline send with a short first line and a stale matching row must report '$expected' for case '$case_id', got '$out'"
+    type_count=$(grep -c $'\x1f''pane'$'\x1f''send-text' "$log")
+    [ "$type_count" -eq 1 ] || fail "case '$case_id' must type the message exactly once, typed $type_count time(s)"
+  done
+  pass "fm_backend_herdr_send_text_submit: a multiline send whose first line is shorter than the queue key bound confirms from a new queued row only"
+}
+
+test_send_text_submit_busy_pi_unreadable_pane_stays_unknown() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/submit-pi-busy-unreadable"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/2.out"
+  make_pi_busy_pane 'reply with just OK' > "$resp/3.out"
+  printf 'no composer structure at all\n' > "$resp/5.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "reply with just OK" 3 0.01 0.01' "$ROOT" )
+  [ "$out" = unknown ] || fail "an unreadable busy Pi pane must stay unknown, got '$out'"
+  pass "fm_backend_herdr_send_text_submit: an ambiguous busy Pi pane stays unknown instead of claiming delivery"
+}
+
+test_send_text_submit_idle_pi_keeps_native_agent_state_path() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/submit-pi-idle"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"idle"}}}\n' > "$resp/2.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/4.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 3 0.01 0.01' "$ROOT" )
+  [ "$out" = empty ] || fail "an idle Pi submit must still confirm from native agent-state, got '$out'"
+  [ "$(grep -c $'\x1f''pane'$'\x1f''read' "$log")" -eq 0 ] || fail "an idle Pi submit must never read the pane for confirmation"
+  pass "fm_backend_herdr_send_text_submit: an idle Pi baseline keeps the native agent-state confirmation path unchanged"
+}
+
+test_send_text_submit_busy_non_pi_keeps_composer_fallback() {
+  local dir log resp fb out read_count
+  dir="$TMP_ROOT/submit-busy-claude"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent":"claude","agent_status":"working"}}}\n' > "$resp/2.out"
+  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/4.out"
+  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/6.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 2 0.01 0.01' "$ROOT" )
+  [ "$out" = pending ] || fail "a busy non-Pi target must keep its composer-clearance fallback, got '$out'"
+  read_count=$(grep -c $'\x1f''pane'$'\x1f''read' "$log")
+  [ "$read_count" -eq 2 ] || fail "a busy non-Pi target should make one composer read per Enter attempt, made $read_count"
+  pass "fm_backend_herdr_send_text_submit: a busy non-Pi target keeps the existing composer-clearance fallback"
+}
+
+test_fm_send_busy_pi_outcomes() {
+  local dir log resp fb state neutral rc err
+  dir="$TMP_ROOT/fm-send-pi-busy"; mkdir -p "$dir/responses" "$dir/state"
+  log="$dir/log"; resp="$dir/responses"; state="$dir/state"; err="$dir/send.err"; : > "$log"
+  neutral="$dir/neutral-root"; mkdir -p "$neutral"
+  fm_write_meta "$state/pi-busy.meta" "window=default:w1:p2" "backend=herdr" "kind=ship" "harness=pi"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/2.out"
+  make_pi_busy_pane 'hello captain' > "$resp/3.out"
+  make_pi_busy_pane '' 'hello captain' > "$resp/5.out"
+  fb=$(make_herdr_fakebin "$dir")
+  PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$neutral" FM_HOME="$neutral" FM_STATE_OVERRIDE="$state" \
+    FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_SEND_SETTLE=0 \
+    "$ROOT/bin/fm-send.sh" pi-busy "hello captain" >/dev/null 2>"$err"; rc=$?
+  expect_code 0 "$rc" "fm-send should succeed when a busy Pi queues the instruction: $(cat "$err")"
+
+  : > "$log"; rm -f "$resp/.count" "$resp"/*.out
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/2.out"
+  make_pi_busy_pane '/reload' > "$resp/3.out"
+  make_pi_busy_pane '' > "$resp/5.out"
+  make_pi_busy_pane '' > "$resp/7.out"
+  make_pi_busy_pane '' > "$resp/9.out"
+  PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$neutral" FM_HOME="$neutral" FM_STATE_OVERRIDE="$state" \
+    FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_SEND_SETTLE=0 \
+    "$ROOT/bin/fm-send.sh" pi-busy "/reload" >/dev/null 2>"$err"; rc=$?
+  [ "$rc" -ne 0 ] || fail "fm-send must not report a busy-rejected command as delivered"
+  assert_contains "$(cat "$err")" "retry once the target is idle" \
+    "the busy-unqueued diagnostic should tell the caller to retry when the target is idle"
+  assert_contains "$(cat "$err")" "verdict=busy-unqueued" "the busy-unqueued diagnostic should name its verdict"
+  pass "fm-send: a busy Pi's queued instruction succeeds while an unqueued command reports an actionable retry-when-idle failure"
+}
+
+
 # --- fm-backend.sh dispatch wiring -------------------------------------------
 
 test_dispatch_routes_herdr_backend() {
@@ -3179,6 +3402,15 @@ test_composer_state_guard_still_refuses_real_pending_text_after_submit_confirmat
 test_send_text_submit_slow_transition_within_one_enter_needs_no_extra_enter
 test_send_text_submit_send_failed
 test_send_text_submit_unknown_on_capture_failure
+test_send_text_submit_busy_pi_steering_entry_confirms
+test_send_text_submit_busy_pi_late_render_confirms_without_retyping
+test_send_text_submit_busy_pi_unqueued_command_is_not_delivery
+test_send_text_submit_busy_pi_stale_steering_row_never_confirms
+test_send_text_submit_busy_pi_multiline_short_first_line_confirms
+test_send_text_submit_busy_pi_unreadable_pane_stays_unknown
+test_send_text_submit_idle_pi_keeps_native_agent_state_path
+test_send_text_submit_busy_non_pi_keeps_composer_fallback
+test_fm_send_busy_pi_outcomes
 test_dispatch_routes_herdr_backend
 test_dispatch_busy_state_unknown_for_tmux
 test_agent_confirmed_absent_dead_agent_with_busy_frame

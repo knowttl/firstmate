@@ -167,7 +167,10 @@ Slash and dollar-prefixed input uses the shared harness-aware settle before the 
 Text is typed once; only Enter is retried.
 
 On an idle or done native baseline, submit confirmation waits for `working` or `blocked` across a bounded polling window.
-On an already active or unreadable baseline, it falls back to conservative composer clearance.
+On an already generating Pi baseline, native state cannot change and the composer is cleared by the submission itself, so confirmation comes from Pi's own queued-input rows and requires a new entry carrying this send's text.
+Input that Pi consumes while busy without queueing it, such as a command it runs or refuses immediately, is reported as unqueued rather than delivered, and the caller is told to retry once the target is idle.
+That distinction is transport-generic: no command name, warning text, or other harness message is inspected.
+On any other already active or unreadable baseline, confirmation falls back to conservative composer clearance.
 A fully unreadable target stops retrying and reports unknown.
 The poll density bounds the residual possibility of an extremely fast complete turn; a missed transition can cause only a redundant Enter on an empty composer, never duplicate message text.
 
@@ -266,6 +269,7 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 - Mid-session secondmate liveness is not implemented.
 - OpenCode 1.18.4 can accept Enter while busy without clearing the composer.
   The tmux backend has a busy-queue fallback, but Herdr still reports this case as submit pending and needs a separate adapter fix.
+- A Pi target that stops generating just before its submission lands, or whose queued entry is consumed before the confirming read, is reported as not delivered rather than risking a false success.
 - Only tmux and Herdr can host the away-mode supervisor terminal.
 
 ## Regression entry points
