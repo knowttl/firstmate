@@ -523,15 +523,18 @@ test_stale_terminal_status_overridden_by_active_run() {
   [ ! -e "$state/.hb-surfaced-validating" ] || fail "an absorbed wake must not mark the status line as surfaced"
   reap "$pid"
 
-  # Phase B: backdate the idle timer past the threshold; the run genuinely
-  # wedges and the next poll escalates exactly like the non-terminal case.
+  # Phase B: backdate the idle timer past the long-call allowance. The crew still
+  # READS as working (a frozen pipeline keeps reporting its run step), so only the
+  # ceiling backstop can surface it - and it must, or a wedged validation would
+  # never be reported at all.
   echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
   : > "$out"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
-    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 \
+    FM_WEDGE_WORKING_ESCALATE_SECS=300 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
-  wait_for_exit "$pid" 40 || fail "watcher did not escalate an overridden stale terminal status past the threshold"
+  wait_for_exit "$pid" 40 || fail "watcher did not escalate an overridden stale terminal status past the long-call allowance"
   grep -F "stale: $window" "$out" >/dev/null || fail "escalation did not print a stale wake"
   grep -F "possible wedge" "$out" >/dev/null || fail "escalation did not flag a possible wedge"
   unset FM_FAKE_CREW_STATE
@@ -575,21 +578,24 @@ test_nonterminal_stale_provably_working_absorbed_then_escalated() {
   [ -s "$state/.stale-since-$key" ] || fail "stale-since escalation timer was not recorded on absorb"
   reap "$pid"
 
-  # Phase B: backdate the idle timer past the threshold; the next run escalates.
-  # (The subsequent-sight timer path does not re-read the crew state.)
+  # Phase B: backdate the idle timer past the threshold, and let the run end while
+  # the pane stays frozen at the same hash - the crew is now genuinely stopped, so
+  # the threshold re-verification must escalate it instead of deferring again.
   echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
   : > "$out"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
-  wait_for_exit "$pid" 40 || fail "watcher did not escalate a provably-working non-terminal stale past the threshold"
+  wait_for_exit "$pid" 40 || fail "watcher did not escalate a stopped crew whose stale timer passed the threshold"
   grep -F "stale: $window" "$out" >/dev/null || fail "escalation did not print a stale wake"
   grep -F "possible wedge" "$out" >/dev/null || fail "escalation did not flag a possible wedge"
   [ ! -e "$state/.stale-since-$key" ] || fail "stale-since timer was not cleared after escalation"
+  [ ! -e "$state/.wedge-verified-$key" ] || fail "wedge verification marker was not cleared after escalation"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the wedge escalation failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "wedge escalation was not queued"
-  pass "provably-working non-terminal stale is absorbed on first sight, then wedge-escalated past the threshold"
+  pass "provably-working non-terminal stale is absorbed on first sight, then wedge-escalated once the crew stops"
 }
 
 # --- non-terminal stale, crew NOT provably working: surfaced immediately ------
@@ -1004,14 +1010,97 @@ test_paused_authoritative_working_preserves_wedge_timer() {
   echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
   : > "$out"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
-    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 \
+    FM_WEDGE_WORKING_ESCALATE_SECS=300 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
-  wait_for_exit "$pid" 40 || fail "authoritative working state did not wedge-escalate past the threshold"
+  wait_for_exit "$pid" 40 || fail "authoritative working state did not wedge-escalate past the long-call allowance"
   grep -F "possible wedge" "$out" >/dev/null || fail "authoritative working wedge escalation omitted its reason"
   [ ! -e "$state/.stale-since-$key" ] || fail "wedge timer remained after authoritative working escalation"
   unset FM_FAKE_CREW_STATE
   pass "a paused status overridden by authoritative working preserves its wedge timer and escalates"
+}
+
+# --- wedge_escalation_deferred (the long-call allowance) ---------------------
+# Reaching the wedge threshold is not proof of a wedge: a crew blocked on a long
+# in-contract foreground call (a no-mistakes gate call runs against its own
+# multi-thousand-second allowance) sits on a frozen pane for far longer than the
+# 240s threshold, which produced repeated possible-wedge alarms against healthy
+# workers on every pipeline gate (2026-07-30). The predicate defers such an
+# escalation while the crew keeps re-verifying as working, caches that verdict for
+# one recheck window, and gives up at the allowance so a real wedge still surfaces.
+test_wedge_escalation_deferred_classifier() {
+  local dir state rc
+  dir=$(make_case classify-wedge-defer); state="$dir/state"
+  export FM_CREW_STATE_BIN="$dir/fakebin/fm-crew-state.sh"
+
+  FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  export FM_FAKE_CREW_STATE
+  wedge_escalation_deferred t 500 999999 240; rc=$?
+  [ "$rc" = 0 ] || fail "a working crew inside the allowance was not deferred after a fresh verification"
+  wedge_escalation_deferred t 500 10 240; rc=$?
+  [ "$rc" = 2 ] || fail "a still-fresh verification did not use the cached deferral"
+  wedge_escalation_deferred t 4000 999999 240; rc=$?
+  [ "$rc" = 1 ] || fail "a working crew past the allowance was not escalated"
+  FM_WEDGE_WORKING_ESCALATE_SECS=0 wedge_escalation_deferred t 500 999999 240; rc=$?
+  [ "$rc" = 1 ] || fail "the allowance could not be disabled"
+
+  FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  wedge_escalation_deferred t 500 999999 240; rc=$?
+  [ "$rc" = 1 ] || fail "a crew that is no longer working was deferred"
+  wedge_escalation_deferred t 500 10 240; rc=$?
+  [ "$rc" = 2 ] || fail "the cached window is not honoured regardless of the current verdict"
+  unset FM_FAKE_CREW_STATE FM_CREW_STATE_BIN
+  pass "wedge_escalation_deferred: defers a working crew inside the allowance, escalates past it or once it stops"
+}
+
+# --- a live in-contract pipeline call is NOT alarmed every threshold window ---
+# The 2026-07-30 defect: three possible-wedge escalations in one day against
+# healthy workers, one of them 916s into a no-mistakes gate call with a 3000s
+# allowance of its own. The pane is legitimately frozen for the whole call, so the
+# wedge timer fired every ~4 minutes and the alarm became noise. Repeated polls
+# past the threshold must now absorb while the crew keeps verifying as working,
+# with at most one crew read per threshold window.
+test_in_contract_pipeline_call_is_not_wedge_escalated() {
+  local dir state fakebin out capture_file window key pane_hash sig pid marker n
+  dir=$(make_case in-contract-no-wedge); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  window="test:fm-gatecall"
+  printf 'no-mistakes axi run: awaiting the review gate' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/gatecall.meta"
+  printf 'working: implementation committed, validating\n' > "$state/gatecall.status"
+  sig=$(seen_sig "$state/gatecall.status"); printf '%s' "$sig" > "$state/.seen-gatecall_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "no-mistakes axi run: awaiting the review gate")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf '%s' "$pane_hash" > "$state/.stale-$key"
+  # 916s into the gate call, exactly the observed healthy case.
+  echo $(( $(date +%s) - 916 )) > "$state/.stale-since-$key"
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+
+  n=1
+  while [ "$n" -le 2 ]; do
+    : > "$out"
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+      FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+      FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+    pid=$!
+    if ! wait_live "$pid" 30; then
+      reap "$pid"; fail "round $n wedge-escalated a live in-contract pipeline call: $(cat "$out")"
+    fi
+    [ ! -s "$out" ] || { reap "$pid"; fail "round $n printed a wake reason for a live in-contract call: $(cat "$out")"; }
+    [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "round $n queued a wake for a live in-contract call"; }
+    reap "$pid"
+    n=$((n + 1))
+  done
+  marker="$state/.wedge-verified-$key"
+  [ -e "$marker" ] || fail "the deferral did not record its crew verification"
+  [ "$(cat "$state/.wedge-escalations-$key" 2>/dev/null || echo 0)" = 0 ] || fail "a deferred wedge still counted an escalation"
+  [ -s "$state/.stale-since-$key" ] || fail "the deferral discarded the idle timer, losing the allowance clock"
+  grep -F "deferred" "$state/.watch-triage.log" >/dev/null || fail "the deferral was not recorded in the triage log"
+  unset FM_FAKE_CREW_STATE
+  pass "a live in-contract pipeline call is absorbed across repeated threshold windows instead of wedge-escalated"
 }
 
 # --- consecutive wedge escalations on the same pane demand deep inspection ----
@@ -1056,12 +1145,13 @@ test_wedge_escalation_marks_demand_deep_inspection_after_threshold() {
   n=1
   while [ "$n" -le 3 ]; do
     # Backdate the wedge timer past the threshold before each round, mirroring
-    # the existing wedge-escalation tests' Phase B (the subsequent-sight timer
-    # path does not re-read the crew state).
+    # the existing wedge-escalation tests' Phase B. The still-working crew is held
+    # past its long-call allowance so every round reaches the ceiling backstop.
     echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
     : > "$out"
     PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
-      FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+      FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 \
+      FM_WEDGE_WORKING_ESCALATE_SECS=300 FM_POLL=1 FM_SIGNAL_GRACE=1 \
       FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
     pid=$!
     wait_for_exit "$pid" 40 || fail "watcher did not escalate on consecutive wedge round $n: $(cat "$out")"
@@ -1334,6 +1424,7 @@ test_window_is_busy_requires_a_present_agent
 test_crew_is_provably_working_classifier
 test_status_is_paused_classifier
 test_crew_absorb_class_classifier
+test_wedge_escalation_deferred_classifier
 test_signal_crew_provably_working_classifier
 test_provably_working_signal_absorbed
 test_turn_ended_provably_working_absorbed
@@ -1343,6 +1434,7 @@ test_actionable_signal_surfaced
 test_terminal_stale_surfaced
 test_stale_terminal_status_overridden_by_active_run
 test_nonterminal_stale_provably_working_absorbed_then_escalated
+test_in_contract_pipeline_call_is_not_wedge_escalated
 test_wedge_escalation_marks_demand_deep_inspection_after_threshold
 test_wedge_escalation_resets_when_pane_becomes_active
 test_nonterminal_stale_not_working_surfaced
