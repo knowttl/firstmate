@@ -123,12 +123,13 @@ BUSY_REGEX=${FM_BUSY_REGEX:-'esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel'}
 # busy pane is SURFACED, so a finish reported only through interactive pane menus
 # (no done: status) is never swallowed. An ACTIONABLE wake (a captain-relevant
 # signal, a no-verb signal whose crew is not provably working, any check, a stale
-# pane whose crew is not provably working, a provably-working stale past the
-# threshold, or anything unknown) is written to the durable queue and exits, which
-# is what wakes the LLM through the background-task completion. The same classifier
-# (fm-classify-lib.sh) backs the away-mode daemon; while state/.afk exists the
-# daemon owns triage, so this watcher reverts to one-shot (enqueue + exit on every
-# wake) and never double-triages - and never runs the costly provably-working read.
+# pane whose crew is not provably working, a provably-working stale that stops
+# re-verifying or reaches its working deferral allowance, or anything unknown) is
+# written to the durable queue and exits, which is what wakes the LLM through the
+# background-task completion. The same classifier (fm-classify-lib.sh) backs the
+# away-mode daemon; while state/.afk exists the daemon owns triage, so this watcher
+# reverts to one-shot (enqueue + exit on every wake) and never double-triages - and
+# never runs the costly provably-working read.
 STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provably-working stale is re-checked for a possible wedge
 # At that threshold the crew is re-verified rather than escalated outright: a
 # crew still provably working is deferred for another threshold window, up to
@@ -279,15 +280,10 @@ FM_WEDGE_DEMAND_INSPECT_COUNT=${FM_WEDGE_DEMAND_INSPECT_COUNT:-3}
 # stale_is_terminal-overridden path (a captain-relevant status-log line that an
 # active run/busy pane outranked).
 #
-# Reaching the threshold is not enough to escalate: a crew blocked on a long
-# IN-CONTRACT foreground call (a no-mistakes gate call runs against its own
-# multi-thousand-second allowance) renders a static pane far past
-# STALE_ESCALATE_SECS, and escalating on that alone produced a stream of
-# possible-wedge alarms against healthy workers on every pipeline gate
-# (2026-07-30). wedge_escalation_deferred (bin/fm-classify-lib.sh) owns that
-# decision and this function owns its per-window verification marker, so the
-# crew state is re-read at most once per STALE_ESCALATE_SECS per pane rather
-# than never (the pre-2026-07-30 behavior) or every poll.
+# Reaching the threshold invokes wedge_escalation_deferred, whose bounded
+# deferral policy is documented in docs/architecture.md.
+# This function owns the per-window verification marker, so the crew state is
+# re-read at most once per STALE_ESCALATE_SECS per pane rather than every poll.
 wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file>
   local win=$1 since_file=$2 label=$3 escalation_file=$4 since age n reason vf
   since=$(cat "$since_file" 2>/dev/null || true)

@@ -356,18 +356,10 @@ crew_is_provably_working() {  # <id>
   [ "$(crew_absorb_class "$1")" = working ]
 }
 
-# Long-call allowance: how long an idle pane whose crew is still PROVABLY working
-# may stay absorbed before its wedge escalation fires anyway. A crew blocked on a
-# long IN-CONTRACT foreground call - a `no-mistakes axi run`/`respond` gate call
-# blocks synchronously against its own multi-thousand-second allowance
-# (AGENTS.md section 7) - renders a static pane for far longer than the wedge
-# threshold (FM_STALE_ESCALATE_SECS, default 240s), so escalating on that
-# threshold alone produced a stream of possible-wedge alarms against healthy
-# workers on every pipeline gate. This ceiling is the bound that keeps the
-# real-wedge guarantee: a frozen crew that keeps LOOKING provably working still
-# surfaces within it. One hour by default; FM_WEDGE_WORKING_ESCALATE_SECS
-# overrides it and 0 disables the deferral entirely (every wedge escalates on the
-# plain threshold, the pre-2026-07-30 behavior).
+# A long synchronous foreground call can leave a provably working crew's pane
+# idle past the standard threshold.
+# This ceiling keeps the deferral bounded; docs/architecture.md owns the
+# wake-classification contract.
 FM_WEDGE_WORKING_ESCALATE_SECS_DEFAULT=3600
 
 # Decide whether a wedge escalation that has reached its idle threshold must be
@@ -379,10 +371,8 @@ FM_WEDGE_WORKING_ESCALATE_SECS_DEFAULT=3600
 # The caller owns the verification marker so this stays a pure decision with at
 # most one bounded crew-state read per <recheck-secs> per pane: it passes the age
 # of its own marker and the recheck interval, and refreshes the marker only on 0.
-# That re-verification is exactly the "check whether it is really wedged before
-# believing the alarm" step a supervisor otherwise has to do by hand, and it is
-# what bounds the escalation of a crew that STOPS mid-episode to one recheck
-# window rather than the full ceiling.
+# Re-verification bounds a crew that stops mid-episode to one recheck window
+# rather than the full ceiling.
 wedge_escalation_deferred() {  # <task> <idle-secs> <verified-age-secs> <recheck-secs>
   local task=$1 idle=$2 verified_age=$3 recheck=$4 ceiling
   ceiling=${FM_WEDGE_WORKING_ESCALATE_SECS:-$FM_WEDGE_WORKING_ESCALATE_SECS_DEFAULT}
