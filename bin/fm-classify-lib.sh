@@ -356,6 +356,48 @@ crew_is_provably_working() {  # <id>
   [ "$(crew_absorb_class "$1")" = working ]
 }
 
+# Long-call allowance: how long an idle pane whose crew is still PROVABLY working
+# may stay absorbed before its wedge escalation fires anyway. A crew blocked on a
+# long IN-CONTRACT foreground call - a `no-mistakes axi run`/`respond` gate call
+# blocks synchronously against its own multi-thousand-second allowance
+# (AGENTS.md section 7) - renders a static pane for far longer than the wedge
+# threshold (FM_STALE_ESCALATE_SECS, default 240s), so escalating on that
+# threshold alone produced a stream of possible-wedge alarms against healthy
+# workers on every pipeline gate. This ceiling is the bound that keeps the
+# real-wedge guarantee: a frozen crew that keeps LOOKING provably working still
+# surfaces within it. One hour by default; FM_WEDGE_WORKING_ESCALATE_SECS
+# overrides it and 0 disables the deferral entirely (every wedge escalates on the
+# plain threshold, the pre-2026-07-30 behavior).
+FM_WEDGE_WORKING_ESCALATE_SECS_DEFAULT=3600
+
+# Decide whether a wedge escalation that has reached its idle threshold must be
+# DEFERRED because the crew is still provably working inside that allowance.
+# Prints nothing; the verdict is the exit status:
+#   0 - defer, freshly verified (the caller must record the verification time)
+#   2 - defer on the caller's cached verification, no crew read performed
+#   1 - escalate (past the ceiling, deferral disabled, or no longer working)
+# The caller owns the verification marker so this stays a pure decision with at
+# most one bounded crew-state read per <recheck-secs> per pane: it passes the age
+# of its own marker and the recheck interval, and refreshes the marker only on 0.
+# That re-verification is exactly the "check whether it is really wedged before
+# believing the alarm" step a supervisor otherwise has to do by hand, and it is
+# what bounds the escalation of a crew that STOPS mid-episode to one recheck
+# window rather than the full ceiling.
+wedge_escalation_deferred() {  # <task> <idle-secs> <verified-age-secs> <recheck-secs>
+  local task=$1 idle=$2 verified_age=$3 recheck=$4 ceiling
+  ceiling=${FM_WEDGE_WORKING_ESCALATE_SECS:-$FM_WEDGE_WORKING_ESCALATE_SECS_DEFAULT}
+  case "$ceiling" in ''|*[!0-9]*) ceiling=$FM_WEDGE_WORKING_ESCALATE_SECS_DEFAULT ;; esac
+  [ "$ceiling" -gt 0 ] || return 1
+  [ "$idle" -lt "$ceiling" ] || return 1
+  case "$recheck" in ''|*[!0-9]*) recheck=0 ;; esac
+  case "$verified_age" in ''|*[!0-9]*) verified_age=0 ;; esac
+  if [ "$verified_age" -lt "$recheck" ]; then
+    return 2
+  fi
+  crew_is_provably_working "$task" && return 0
+  return 1
+}
+
 # 0 if crew <id>'s authoritative current state is a declared external-wait pause.
 # The stale path absorbs such a crew (on a long re-surface cadence) instead of
 # escalating a possible wedge.

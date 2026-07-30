@@ -383,6 +383,78 @@ test_housekeeping_persistent_stale_escalates() {
   pass "persistent stale escalates after threshold and clears its marker"
 }
 
+# --- away-mode wedge escalation vs a long in-contract call -------------------
+# The 2026-07-30 defect: a crew blocked on a no-mistakes gate call (its own
+# multi-thousand-second allowance) renders a frozen pane, so the 240s stale
+# threshold reported healthy workers as possible wedges. Away mode must re-verify
+# the crew before alarming, and must still alarm once that verification stops
+# coming back working - or past the long-call allowance.
+test_housekeeping_in_contract_stale_defers_then_escalates() {
+  local dir state fakebin win pane key crewbin
+  dir=$(make_supercase stale-in-contract)
+  state="$dir/state"; fakebin="$dir/fakebin"
+  win="sess:fm-gate-w20"; pane="$dir/pane.txt"
+  crewbin=$(make_fake_crew_state "$fakebin")
+  fm_write_meta "$state/gate-w20.meta" "window=$win" "backend=tmux" "harness=claude"
+  printf 'working: validating\n' > "$state/gate-w20.status"
+  printf 'no-mistakes axi run: awaiting the review gate\n' > "$pane"
+  key=$(printf '%s' "gate-w20" | tr ':/.' '___')
+  echo $(( $(date +%s) - 916 )) > "$state/.subsuper-stale-$key"
+
+  # Round 1: the crew verifies as working inside its allowance - no alarm.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$crewbin" \
+    FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)' \
+    FM_STALE_ESCALATE_SECS=240 housekeeping "$state"
+  [ ! -s "$state/.subsuper-escalations" ] || fail "a live in-contract pipeline call was escalated as a possible wedge"
+  [ -e "$state/.subsuper-stale-$key" ] || fail "the deferral dropped the idle marker, losing the allowance clock"
+  [ -e "$state/.subsuper-wedge-verified-$key" ] || fail "the deferral did not record its crew verification"
+
+  # Round 2, same window: the cached verdict holds without a second crew read.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$crewbin" \
+    FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)' \
+    FM_STALE_ESCALATE_SECS=240 housekeeping "$state"
+  [ ! -s "$state/.subsuper-escalations" ] || fail "a cached deferral still escalated"
+
+  # The call ends without the pane changing: the crew has genuinely stopped, so the
+  # next verification window must escalate it.
+  rm -f "$state/.subsuper-wedge-verified-$key"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$crewbin" \
+    FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available' \
+    FM_STALE_ESCALATE_SECS=240 housekeeping "$state"
+  grep -F "possible wedge" "$state/.subsuper-escalations" >/dev/null \
+    || fail "a stopped crew on a frozen pane was not escalated as a possible wedge"
+  [ ! -e "$state/.subsuper-stale-$key" ] || fail "stale marker not cleared after escalation"
+  [ ! -e "$state/.subsuper-wedge-verified-$key" ] || fail "verification marker not cleared after escalation"
+  pass "away mode defers a wedge alarm while an in-contract call verifies as working, and escalates once it stops"
+}
+
+# The allowance is a ceiling, not a mute: a frozen pipeline keeps REPORTING its run
+# step, so only this backstop can surface it.
+test_housekeeping_in_contract_stale_escalates_past_allowance() {
+  local dir state fakebin win pane key crewbin
+  dir=$(make_supercase stale-in-contract-ceiling)
+  state="$dir/state"; fakebin="$dir/fakebin"
+  win="sess:fm-gate-w21"; pane="$dir/pane.txt"
+  crewbin=$(make_fake_crew_state "$fakebin")
+  fm_write_meta "$state/gate-w21.meta" "window=$win" "backend=tmux" "harness=claude"
+  printf 'working: validating\n' > "$state/gate-w21.status"
+  printf 'no-mistakes axi run: awaiting the review gate\n' > "$pane"
+  key=$(printf '%s' "gate-w21" | tr ':/.' '___')
+  echo $(( $(date +%s) - 5000 )) > "$state/.subsuper-stale-$key"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$crewbin" \
+    FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)' \
+    FM_STALE_ESCALATE_SECS=240 FM_WEDGE_WORKING_ESCALATE_SECS=3600 housekeeping "$state"
+  grep -F "possible wedge" "$state/.subsuper-escalations" >/dev/null \
+    || fail "a still-working-looking crew past the allowance was never escalated"
+  [ ! -e "$state/.subsuper-stale-$key" ] || fail "stale marker not cleared after the ceiling escalation"
+  pass "away mode escalates a frozen in-contract call once it passes the long-call allowance"
+}
+
 test_housekeeping_resumed_stale_cleared() {
   local dir state fakebin win pane key
   dir=$(make_supercase stale-resumed)
@@ -1811,6 +1883,8 @@ test_housekeeping_migrates_watcher_pause_marker
 test_housekeeping_migrates_watcher_unpaused_marker_to_clear
 test_housekeeping_seeds_pause_marker_from_status
 test_housekeeping_persistent_stale_escalates
+test_housekeeping_in_contract_stale_defers_then_escalates
+test_housekeeping_in_contract_stale_escalates_past_allowance
 test_housekeeping_resumed_stale_cleared
 test_housekeeping_paused_resurfaces_and_resets
 test_housekeeping_paused_resumed_cleared

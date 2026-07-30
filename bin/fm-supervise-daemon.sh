@@ -86,8 +86,13 @@
 #                                   disables. Use sparingly: it overrides the
 #                                   captain-relevant escalation for matching
 #                                   kinds.
-#          FM_STALE_ESCALATE_SECS   idle seconds before a stale pane escalates
-#                                   as a possible wedge (default 240)
+#          FM_STALE_ESCALATE_SECS   idle seconds before a stale pane is
+#                                   re-checked for a possible wedge (default 240)
+#          FM_WEDGE_WORKING_ESCALATE_SECS
+#                                   max idle seconds a stale pane whose crew keeps
+#                                   re-verifying as provably working stays
+#                                   deferred instead of escalating as a wedge
+#                                   (default 3600; 0 disables the deferral)
 #          FM_PAUSE_RESURFACE_SECS  idle seconds before a declared external wait
 #                                   re-surfaces as a recheck (default 3600)
 #          FM_ESCALATE_BATCH_SECS   buffer window for batched escalation
@@ -436,7 +441,7 @@ stale_marker_record() {  # <window> <state>  — create if absent
 stale_marker_remove() {  # <window> <state>
   local win=$1 state=$2 key
   key=$(_stale_key "$(window_to_task "$win" "$state")")
-  rm -f "$state/.subsuper-stale-$key"
+  rm -f "$state/.subsuper-stale-$key" "$state/.subsuper-wedge-verified-$key"
 }
 
 # Pause marker: state/.subsuper-paused-<key> holds the epoch a declared pause was
@@ -464,7 +469,8 @@ clear_pause_tracking() {  # <window> <state>
   watcher_key=$(_stale_key "$win")
   rm -f "$state/.subsuper-paused-$key" "$state/.subsuper-stale-$key" \
     "$state/.paused-$watcher_key" "$state/.paused-rechecked-$watcher_key" "$state/.paused-resurfaced-$watcher_key" \
-    "$state/.stale-$watcher_key" "$state/.stale-since-$watcher_key" "$state/.wedge-escalations-$watcher_key"
+    "$state/.stale-$watcher_key" "$state/.stale-since-$watcher_key" "$state/.wedge-escalations-$watcher_key" \
+    "$state/.wedge-verified-$watcher_key" "$state/.subsuper-wedge-verified-$key"
 }
 
 reconcile_pause_tracking() {  # <window> <state> <last-status-line>
@@ -930,14 +936,16 @@ _oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first ar
 #     attempt one normal delivery; if it cannot confirm, raise the wedge alarm.
 #     Never silently defer forever.
 #  2) stale recheck: for each pending stale marker past STALE_ESCALATE_SECS,
-#     re-peek the pane; still idle -> escalate (wedge); resumed -> clear marker.
+#     re-peek the pane; resumed -> clear marker; still idle -> escalate (wedge)
+#     unless the crew re-verifies as provably working, which defers the alarm for
+#     another threshold window up to WEDGE_WORKING_ESCALATE_SECS.
 #  2b) pause re-surface: for each declared-pause marker past PAUSE_RESURFACE_SECS,
 #     re-peek; busy/gone -> clear; still idle + still paused -> escalate a recheck
 #     digest and reset the window (repeating bounded re-surface, never a wedge).
 #  3) heartbeat scan: every HEARTBEAT_SCAN_SECS, grep state/*.status for a
 #     captain-relevant line the per-wake classifier missed and escalate it.
 housekeeping() {  # <state>
-  local state=$1 now due f key task win marker age last max_defer oldest pause_secs
+  local state=$1 now due f key task win marker age last max_defer oldest pause_secs stale_secs verified
   now=$(_now)
   migrate_watcher_pause_markers "$state"
 
@@ -989,13 +997,32 @@ housekeeping() {  # <state>
       continue
     fi
     age=$(( now - $(cat "$marker" 2>/dev/null || echo "$now") ))
-    [ "$age" -ge "${FM_STALE_ESCALATE_SECS:-$STALE_ESCALATE_SECS_DEFAULT}" ] || continue
+    stale_secs=${FM_STALE_ESCALATE_SECS:-$STALE_ESCALATE_SECS_DEFAULT}
+    [ "$age" -ge "$stale_secs" ] || continue
     stale_window_is_busy "$win" "$state"
     case "$?" in
       0) rm -f "$marker" ;;
       2) rm -f "$marker" ;;
-      *) escalate_add "$state" "stale persisted ${age}s (possible wedge): $win"
-         stale_marker_remove "$win" "$state" ;;
+      *)
+        # An idle pane past the threshold is not yet a wedge: a crew blocked on a
+        # long in-contract foreground call (a no-mistakes gate call against its own
+        # multi-thousand-second allowance) looks exactly like this for far longer
+        # than the threshold. Re-verify the crew before alarming, at most once per
+        # threshold window, and escalate anyway once the deferral allowance runs
+        # out. wedge_escalation_deferred (bin/fm-classify-lib.sh) owns that policy;
+        # this loop owns only the verification marker.
+        verified="$state/.subsuper-wedge-verified-$key"
+        wedge_escalation_deferred "$task" "$age" "$(_file_age "$verified")" "$stale_secs"
+        case "$?" in
+          0) : > "$verified"
+             log "stale ${age}s on $win deferred: crew still provably working"
+             continue ;;
+          2) continue ;;
+        esac
+        rm -f "$verified"
+        escalate_add "$state" "stale persisted ${age}s (possible wedge): $win"
+        stale_marker_remove "$win" "$state"
+        ;;
     esac
   done
 
