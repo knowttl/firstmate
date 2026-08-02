@@ -86,13 +86,8 @@
 #                                   disables. Use sparingly: it overrides the
 #                                   captain-relevant escalation for matching
 #                                   kinds.
-#          FM_STALE_ESCALATE_SECS   idle seconds before a stale pane is
-#                                   re-checked for a possible wedge (default 240)
-#          FM_WEDGE_WORKING_ESCALATE_SECS
-#                                   max idle seconds a stale pane whose crew keeps
-#                                   re-verifying as provably working stays
-#                                   deferred instead of escalating as a wedge
-#                                   (default 3600; 0 disables the deferral)
+#          FM_STALE_ESCALATE_SECS   idle seconds before a stale pane escalates
+#                                   as a possible wedge (default 240)
 #          FM_PAUSE_RESURFACE_SECS  idle seconds before a declared external wait
 #                                   re-surfaces as a recheck (default 3600)
 #          FM_ESCALATE_BATCH_SECS   buffer window for batched escalation
@@ -101,7 +96,8 @@
 #                                   (default 300)
 #          FM_HOUSEKEEPING_TICK     seconds between housekeeping passes while
 #                                   the watcher is mid-cycle (default 15)
-#          FM_BUSY_REGEX            optional global busy-signature override
+#          FM_BUSY_REGEX            optional rendered busy-signature override
+#                                   for delivery guards and Grok's fallback
 #          FM_COMPOSER_IDLE_RE      empty-composer regex applied after dim-ghost
 #                                   and structural border stripping (default:
 #                                   bare prompt glyphs plus busy footers)
@@ -179,6 +175,11 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # shellcheck source=bin/fm-supervisor-target-lib.sh
 . "$FM_DAEMON_DIR/fm-supervisor-target-lib.sh"
 
+# The single owner of semantic busy state for recorded tasks
+# (fm_busy_classify).
+# shellcheck source=bin/fm-busy-lib.sh
+. "$FM_DAEMON_DIR/fm-busy-lib.sh"
+
 # --- tunables ---------------------------------------------------------------
 # Supervisor backends this daemon knows how to inject into today. zellij, orca,
 # and cmux are real backends elsewhere in firstmate (bin/fm-backend.sh) but this
@@ -203,8 +204,9 @@ WEDGE_ALARM_NOTIFIER_PID=
 # The captain-relevant verb set and the status classifiers (last_status_line,
 # status_is_captain_relevant, window_to_task, scan_captain_relevant_statuses) now
 # live in bin/fm-classify-lib.sh, shared with the always-on watcher.
-# Composer-empty detection and harness-scoped busy-footer matching live in
-# bin/fm-tmux-lib.sh; FM_BUSY_REGEX still overrides every fallback here.
+# Composer-empty detection, submit acknowledgement, and the harness-scoped
+# supervisor-pane busy guard live in bin/fm-tmux-lib.sh.
+# FM_BUSY_REGEX also overrides Grok's isolated task-state fallback.
 INJECT_FAIL_SLEEP_DEFAULT=30
 INJECT_CONFIRM_RETRIES_DEFAULT=3
 INJECT_CONFIRM_SLEEP_DEFAULT=0.5
@@ -441,7 +443,7 @@ stale_marker_record() {  # <window> <state>  — create if absent
 stale_marker_remove() {  # <window> <state>
   local win=$1 state=$2 key
   key=$(_stale_key "$(window_to_task "$win" "$state")")
-  rm -f "$state/.subsuper-stale-$key" "$state/.subsuper-wedge-verified-$key"
+  rm -f "$state/.subsuper-stale-$key"
 }
 
 # Pause marker: state/.subsuper-paused-<key> holds the epoch a declared pause was
@@ -469,8 +471,7 @@ clear_pause_tracking() {  # <window> <state>
   watcher_key=$(_stale_key "$win")
   rm -f "$state/.subsuper-paused-$key" "$state/.subsuper-stale-$key" \
     "$state/.paused-$watcher_key" "$state/.paused-rechecked-$watcher_key" "$state/.paused-resurfaced-$watcher_key" \
-    "$state/.stale-$watcher_key" "$state/.stale-since-$watcher_key" "$state/.wedge-escalations-$watcher_key" \
-    "$state/.wedge-verified-$watcher_key" "$state/.subsuper-wedge-verified-$key"
+    "$state/.stale-$watcher_key" "$state/.stale-since-$watcher_key" "$state/.wedge-escalations-$watcher_key"
 }
 
 reconcile_pause_tracking() {  # <window> <state> <last-status-line>
@@ -550,34 +551,45 @@ mark_escalated_seen() {  # <kind> <arg> <state>
   esac
 }
 
-# Busy + composer-empty detection are the shared primitives in fm-tmux-lib.sh
-# (one source of truth with fm-send.sh). These thin wrappers keep the daemon's
-# call sites and the unit tests stable.
+# Busy and composer-empty detection form the injection boundary.
+# These thin wrappers keep the daemon's call sites and unit tests stable.
 #
 # pane_input_pending returns 0 unless the composer is positively proven empty.
 # This includes real unsubmitted text, ambiguous structure, unreadable state,
 # and future verdicts. The detector drops dim/faint ghost text and strips the
 # harness's composer box borders, so an aligned ghost-only or idle bordered
 # claude composer ("│ > … │") is correctly proven empty.
-# pane_is_busy / pane_input_pending: BACKEND-AWARE now (previously tmux-only
-# direct calls). <backend> defaults to tmux when omitted, so every existing
-# caller/test that passes only <target> is unaffected. Dispatch goes through
-# bin/fm-backend.sh's generic per-backend primitives (fm_backend_busy_state,
-# fm_backend_capture, fm_backend_composer_state) rather than hand-rolling a
-# case statement here, mirroring the fallback order stale_window_is_busy uses
-# for per-task panes: try the backend's native busy state first, then match
-# captured output. The supervisor pane has no recorded task harness and uses
-# the historical combined fallback; stale task panes select the recorded
-# harness's verified signature.
+# pane_is_busy / pane_input_pending: BACKEND-AWARE (dispatch goes through
+# bin/fm-backend.sh's generic per-backend primitives rather than a hand-rolled
+# case statement here). <backend> defaults to tmux when omitted, so every
+# existing caller/test that passes only <target> is unaffected.
+#
+# This rendered reader applies only to the supervisor pane during away-mode
+# injection. It never classifies a recorded worker task. The detected primary
+# harness selects exactly one signature, so output from another harness cannot
+# make the primary read busy.
+#
+# Resolved lazily and memoized: harness detection walks process ancestry, which
+# is too heavy to pay on every source of this library (the unit tests and the
+# launcher source it purely for its pure functions).
+fm_daemon_primary_harness() {
+  if [ -z "${FM_DAEMON_PRIMARY_HARNESS:-}" ]; then
+    FM_DAEMON_PRIMARY_HARNESS=$("$FM_DAEMON_DIR/fm-harness.sh" 2>/dev/null || printf 'unknown')
+    [ -n "$FM_DAEMON_PRIMARY_HARNESS" ] || FM_DAEMON_PRIMARY_HARNESS=unknown
+  fi
+  printf '%s' "$FM_DAEMON_PRIMARY_HARNESS"
+}
+
 pane_is_busy() {  # <target> [backend]
-  local target=$1 backend=${2:-tmux} bs tail40
-  bs=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null)
-  case "$bs" in
+  local target=$1 backend=${2:-tmux} native tail40 harness
+  harness=$(fm_daemon_primary_harness)
+  native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null)
+  case "$native" in
     busy) return 0 ;;
   esac
   tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || return 1
   printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12 \
-    | fm_busy_lines_match
+    | fm_busy_lines_match "$harness"
 }
 
 # pane_input_pending dispatches through fm_backend_composer_state and treats
@@ -599,21 +611,23 @@ task_window_harness() {  # <window> <state>
   local win=$1 state=$2 task meta
   task=$(window_to_task "$win" "$state")
   meta="$state/$task.meta"
-  grep '^harness=' "$meta" | cut -d= -f2- || true
+  grep '^harness=' "$meta" 2>/dev/null | cut -d= -f2- || true
 }
 
+# stale_window_is_busy: 0 when the task is PROVABLY working through the
+# semantic busy-state contract (bin/fm-busy-lib.sh), 1 when it is not, and 2
+# when the endpoint could not be read at all. Only an exact busy verdict is
+# working: unknown semantic state never becomes busy and never becomes a
+# silent idle, so a stale pane whose state cannot be proven surfaces.
 stale_window_is_busy() {  # <window> <state>
-  local win=$1 state=$2 backend harness label tail40 bs
+  local win=$1 state=$2 backend harness label task tail40 verdict
   backend=$(task_window_backend "$win" "$state")
   harness=$(task_window_harness "$win" "$state")
-  label="fm-$(window_to_task "$win" "$state")"
+  task=$(window_to_task "$win" "$state")
+  label="fm-$task"
   tail40=$(fm_backend_capture "$backend" "$win" 40 "$label" 2>/dev/null) || return 2
-  bs=$(fm_backend_busy_state "$backend" "$win" 2>/dev/null)
-  case "$bs" in
-    busy) return 0 ;;
-  esac
-  printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12 \
-    | fm_busy_lines_match "$harness"
+  verdict=$(fm_busy_classify "$backend" "$win" "$harness" "$task" "$state" "$tail40")
+  [ "${verdict%% *}" = busy ]
 }
 
 escalate_add() {  # <state> <distilled-item>
@@ -936,16 +950,14 @@ _oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first ar
 #     attempt one normal delivery; if it cannot confirm, raise the wedge alarm.
 #     Never silently defer forever.
 #  2) stale recheck: for each pending stale marker past STALE_ESCALATE_SECS,
-#     re-peek the pane; resumed -> clear marker; still idle -> escalate (wedge)
-#     unless the crew re-verifies as provably working, which defers the alarm for
-#     another threshold window up to WEDGE_WORKING_ESCALATE_SECS.
+#     re-peek the pane; still idle -> escalate (wedge); resumed -> clear marker.
 #  2b) pause re-surface: for each declared-pause marker past PAUSE_RESURFACE_SECS,
 #     re-peek; busy/gone -> clear; still idle + still paused -> escalate a recheck
 #     digest and reset the window (repeating bounded re-surface, never a wedge).
 #  3) heartbeat scan: every HEARTBEAT_SCAN_SECS, grep state/*.status for a
 #     captain-relevant line the per-wake classifier missed and escalate it.
 housekeeping() {  # <state>
-  local state=$1 now due f key task win marker age last max_defer oldest pause_secs stale_secs verified
+  local state=$1 now due f key task win marker age last max_defer oldest pause_secs
   now=$(_now)
   migrate_watcher_pause_markers "$state"
 
@@ -997,32 +1009,13 @@ housekeeping() {  # <state>
       continue
     fi
     age=$(( now - $(cat "$marker" 2>/dev/null || echo "$now") ))
-    stale_secs=${FM_STALE_ESCALATE_SECS:-$STALE_ESCALATE_SECS_DEFAULT}
-    [ "$age" -ge "$stale_secs" ] || continue
+    [ "$age" -ge "${FM_STALE_ESCALATE_SECS:-$STALE_ESCALATE_SECS_DEFAULT}" ] || continue
     stale_window_is_busy "$win" "$state"
     case "$?" in
       0) rm -f "$marker" ;;
       2) rm -f "$marker" ;;
-      *)
-        # An idle pane past the threshold is not yet a wedge: a crew blocked on a
-        # long in-contract foreground call (a no-mistakes gate call against its own
-        # multi-thousand-second allowance) looks exactly like this for far longer
-        # than the threshold. Re-verify the crew before alarming, at most once per
-        # threshold window, and escalate anyway once the deferral allowance runs
-        # out. wedge_escalation_deferred (bin/fm-classify-lib.sh) owns that policy;
-        # this loop owns only the verification marker.
-        verified="$state/.subsuper-wedge-verified-$key"
-        wedge_escalation_deferred "$task" "$age" "$(_file_age "$verified")" "$stale_secs"
-        case "$?" in
-          0) : > "$verified"
-             log "stale ${age}s on $win deferred: crew still provably working"
-             continue ;;
-          2) continue ;;
-        esac
-        rm -f "$verified"
-        escalate_add "$state" "stale persisted ${age}s (possible wedge): $win"
-        stale_marker_remove "$win" "$state"
-        ;;
+      *) escalate_add "$state" "stale persisted ${age}s (possible wedge): $win"
+         stale_marker_remove "$win" "$state" ;;
     esac
   done
 
@@ -1140,8 +1133,7 @@ inject_msg() {  # <message> [state]
   # discovery), matching this function's pre-existing default assumption.
   backend="${FM_SUPERVISOR_BACKEND:-tmux}"
   fm_backend_target_exists "$backend" "$target" || return 1
-  # (3) Busy-guard: never inject into an in-use pane.
-  #   a) pane_is_busy: the harness shows a busy footer (agent mid-turn).
+  # (3) Busy-guard: never inject into an in-use supervisor pane.
   if pane_is_busy "$target" "$backend"; then
     log "inject deferred: supervisor pane busy (agent mid-turn)"
     return 1
@@ -1212,7 +1204,7 @@ is_wake_reason() {  # <reason>
 # --- dispatch one wake reason to self-handle or escalate --------------------
 # Side effects: logging, marker records, escalation buffer appends.
 handle_wake() {  # <reason> <state>
-  local reason=$1 state=$2 decision action distilled task last
+  local reason=$1 state=$2 decision action distilled task last stale_detail
   local kind="" arg=""
   if should_force_self "$reason"; then
     log "wake force-self (FM_INJECT_SKIP): $reason"
@@ -1221,8 +1213,13 @@ handle_wake() {  # <reason> <state>
   case "$reason" in
     signal:*) kind=signal; arg="${reason#signal: }"
               decision=$(classify_signal "$arg" "$state") ;;
-    stale:*)  kind=stale; arg="${reason#stale: }"
-              decision=$(classify_stale "$arg" "$state") ;;
+    stale:*)  kind=stale; arg="${reason#stale: }"; stale_detail="${arg#"$arg"}"
+              case "$arg" in *" ("*) stale_detail="${arg#*" ("}"; arg="${arg%% \(*}" ;; esac
+              decision=$(classify_stale "$arg" "$state")
+              case "$stale_detail" in
+                idle\ *s,\ possible\ wedge,\ escalation\ *)
+                  decision="escalate|${reason#stale: }" ;;
+              esac ;;
     check:*)  decision=$(classify_check "$reason") ;;
     heartbeat|heartbeat:*) decision=$(classify_heartbeat) ;;
     *)        decision=$(classify_unknown "$reason") ;;

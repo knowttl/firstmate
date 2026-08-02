@@ -18,7 +18,8 @@ FM_HARNESS_RE='claude|codex|opencode|grok|kimi|^pi$|^pi-signed$'
 # Prefer /proc, which needs no fork at all; the ps snapshot is the portable
 # fallback for hosts without a Linux-format /proc (macOS). The snapshot is taken
 # at most once per shell because a single ps costs about half a second on a
-# loaded machine.
+# loaded machine. A pid the snapshot does not list falls through to a per-pid
+# read, which is upstream's own form and the only one a fixture can stub.
 FM_ROW_PPID=
 FM_ROW_COMM=
 FM_ROW_ARGS=
@@ -58,7 +59,17 @@ fm_process_row() {  # <pid>
   done <<EOF
 $FM_PROCESS_SNAPSHOT
 EOF
-  [ "$found" -eq 1 ] || { FM_ROW_PPID=; FM_ROW_COMM=; FM_ROW_ARGS=; return 1; }
+  [ "$found" -eq 1 ] && return 0
+  # Not in the snapshot: read this pid directly. Costs three forks, so it is
+  # never the bulk path, but it keeps a pid the snapshot missed resolvable.
+  FM_ROW_PPID=; FM_ROW_COMM=; FM_ROW_ARGS=
+  FM_ROW_COMM=$(ps -o comm= -p "$pid" 2>/dev/null) || { FM_ROW_COMM=; return 1; }
+  [ -n "$FM_ROW_COMM" ] || return 1
+  FM_ROW_ARGS=$(ps -o args= -p "$pid" 2>/dev/null)
+  FM_ROW_PPID=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+  case "$FM_ROW_PPID" in
+    ''|*[!0-9]*) FM_ROW_PPID=; FM_ROW_COMM=; FM_ROW_ARGS=; return 1 ;;
+  esac
   return 0
 }
 
@@ -129,7 +140,7 @@ fm_harness_pid_alive() {
   local pid=$1 comm args
   kill -0 "$pid" 2>/dev/null || return 1
   comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
-  if printf '%s' "$(basename "$comm")" | grep -qE "$FM_HARNESS_RE"; then
+  if printf '%s' "$(basename -- "$comm")" | grep -qE "$FM_HARNESS_RE"; then
     return 0
   fi
   case "$comm" in
