@@ -138,10 +138,10 @@ SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trai
 # daemon owns triage, so this watcher reverts to one-shot (enqueue + exit on every
 # wake) and never double-triages - and never runs the costly provably-working read.
 STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provably-working stale escalates as a possible wedge
-# An exact busy verdict is proof of activity with no built-in duration bound, so
-# a missing closing lifecycle event can leave a worker classified busy.
-# BUSY_TURN_MAX_SECS bounds how long any busy pane may go with no completed turn:
-# once its task's
+# A busy pane is unconditional proof of liveness with no built-in duration bound,
+# so a hung foreground call can remain hidden even while its rendered busy
+# footer changes every poll. BUSY_TURN_MAX_SECS bounds how long any busy pane
+# may go with no completed turn: once its task's
 # state/<id>.turn-ended marker (or, before any turn has completed, the task's
 # spawn record) is this old, busy_turn_over_age routes the pane through the
 # same STALE_ESCALATE_SECS-paced wedge_timer_check used for a provably-working
@@ -944,9 +944,11 @@ EOF
     ewf="$STATE/.wedge-escalations-$key"
     pf="$STATE/.paused-$key"   # flag: this key's stale is using the bounded pause cadence
     prev=$(cat "$hf" 2>/dev/null || true)
-    # Read the semantic busy-state contract once per window per poll and reuse
-    # the verdict below so classification stays consistent within one cycle.
-    # tail40 is passed only for Grok's isolated rendered-tail fallback.
+    # Busy match: a backend's native semantic state when available (herdr), else
+    # the last 6 non-blank lines only (the TUI footer area, where every verified
+    # harness renders its busy indicator) so busy-looking strings in displayed
+    # content cannot suppress stale detection. Read once per window per poll and
+    # reused below so a busy verdict is consistent within one cycle.
     if window_is_busy "$w" "$tail40"; then busy_now=0; else busy_now=1; fi
     if [ "$h" = "$prev" ]; then
       n=$(( $(cat "$cf" 2>/dev/null || echo 0) + 1 ))
