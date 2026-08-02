@@ -250,12 +250,12 @@ HERDR_SECTION=${HERDR_SECTION%$'\n'}
 fi
 
 # Shared by both crewmate scaffolds so the context-first contract cannot drift between them.
-CONTEXT_RULE=$(cat <<'EOF'
+IFS= read -r -d '' CONTEXT_RULE <<'EOF' || true
 8. Gather the full relevant context before you decide anything or write code: read the code path that DECIDES the outcome end to end (not just the path that supports it), the project's `AGENTS.md`, applicable specs or design docs, and recent related changes.
    Confirm every load-bearing premise with a second, differently shaped check; never build on an absence claim proven by a single grep or one narrow check.
    Report only what you have verified; if you have not checked a claim against the real artifact, say so instead of stating it as fact.
 EOF
-)
+CONTEXT_RULE=${CONTEXT_RULE%$'\n'}
 
 if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
