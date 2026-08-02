@@ -240,9 +240,10 @@ The generic Herdr agent-liveness probe reuses the same classifier.
 A structurally gone pane becomes `missing`, a restored agent-less shell becomes `dead`, a registered agent becomes `alive`, and an unexpected read becomes `unreadable`.
 Unlike tmux process-name inspection, native registration can classify Pi without guessing from a generic interpreter name.
 
-The session-start sweep uses this probe.
-Stale detection and current-state reconciliation use it too: a pane whose frame still matches a harness busy signature is classified busy only while an agent is registered in it, so an exited agent's residual frame can no longer mask a dead endpoint as a working one.
-A confirmed agent-less endpoint is read as gone on the normal stale cadence, and the absence must survive a second confirming read so a momentary status flap is not mistaken for an exit.
+The session-start sweep and `bin/fm-crew-state.sh` current-state reconciliation use this probe.
+Current-state reconciliation rejects a confirmed agent-less endpoint before consulting its semantic busy record, so a record left busy at process exit cannot mask the missing worker.
+The absence must survive a second confirming read so a momentary status flap is not mistaken for an exit.
+Watcher stale detection instead consumes the [semantic busy-state contract](architecture.md#busy-state-is-semantic-per-adapter) and applies its bounded busy-turn escalation.
 Mid-session secondmate liveness is not implemented because idle secondmates are deliberately exempt from stale-pane escalation and need a separate periodic identity signal.
 
 ## Push events and polling fallback

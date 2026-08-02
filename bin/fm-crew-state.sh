@@ -9,8 +9,8 @@
 # re-validates), the log's last line stays stale. This helper never infers the
 # current state from a tail of the log: it reads the authoritative source (a
 # no-mistakes run-step attributed to this crew's branch and current code
-# identity, else the pane busy-signature) and reconciles the possibly-stale log
-# against it.
+# identity, else the semantic busy-state contract) and reconciles the
+# possibly-stale log against it.
 #
 # The determinism lives entirely here - only run-step / pane / log reads plus
 # fixed mapping logic, no heuristics and no LLM. Output is one stable, parseable,
@@ -41,8 +41,8 @@
 #      agree, and are reported as parked.
 #   4. No run for this crew (pre-validation, or kind=scout): fall back to the
 #      recorded backend's authoritative agent-presence read where it has one (an
-#      agent-less endpoint is reported gone, never read from its residual
-#      frame), then the pane busy state, then the status log's last line only
+#      agent-less endpoint is reported gone before a surviving busy record can
+#      mask it), then the semantic busy state, then the status log's last line only
 #      when its verb maps to a recognized run-state. Decision-only events such as
 #      `resolved` never become current state or detail.
 #   5. Missing meta or torn-down worktree: report unknown · none. If no run is
@@ -581,16 +581,16 @@ fi
 [ -n "$BACKEND_TARGET" ] || emit unknown none "no backend target recorded"
 pane_readable "$BACKEND_TARGET" || emit unknown none "backend target gone: $BACKEND_TARGET"
 
-# A readable endpoint is not a live worker. When an agent process exits, the
-# pane it ran in can survive with its last frame still painted, and that frame
-# keeps matching the harness busy signature below - so without this check an
-# agent-less endpoint reports `working · pane` forever and never becomes a
-# recovery candidate. Backends that can answer agent PRESENCE authoritatively
-# settle it here, ahead of the frame read; every other backend falls through
-# unchanged (fm_backend_agent_confirmed_absent, bin/fm-backend.sh, owns the
-# per-backend capability and the two-read confirmation). This is the same
-# "the crew is gone, do not trust a possibly-stale status log" verdict the
-# unreadable-target check above already emits.
+# A readable endpoint is not a live worker. When an agent process exits, its
+# semantic busy record can survive because fm_busy_classify intentionally does
+# not read endpoint registration. Without this check, an agent-less endpoint
+# can still report `working · pane` and never become a recovery candidate.
+# Backends that can answer agent PRESENCE authoritatively settle that here,
+# before the busy-state read; every other backend falls through unchanged
+# (fm_backend_agent_confirmed_absent, bin/fm-backend.sh, owns the per-backend
+# capability and the two-read confirmation). This is the same "the crew is
+# gone, do not trust a possibly-stale status log" verdict the unreadable-target
+# check above already emits.
 if fm_backend_agent_confirmed_absent "$TASK_BACKEND" "$BACKEND_TARGET" 2>/dev/null; then
   emit unknown none "endpoint alive but no agent registered: $BACKEND_TARGET"
 fi

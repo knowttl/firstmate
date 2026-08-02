@@ -910,14 +910,14 @@ fm_backend_agent_alive() {  # <backend> <target>
 # both the pane's rendered frame and the pane's foreground process.
 #
 # This is deliberately narrower than "has an fm_backend_agent_state arm". A
-# rendered frame is not evidence of a live agent: when an agent process exits,
-# its last painted screen stays in the pane, and that residual frame still
-# matches the harness busy signature, so a frame-only liveness read classifies a
-# dead, agent-less endpoint as a busy worker forever and it never goes stale
+# readable endpoint is not evidence of a live agent: when an agent process exits,
+# its last semantic busy record can survive because that classifier does not
+# inspect endpoint registration. A readable, agent-less endpoint could therefore
+# remain classified as a busy worker
 # (reproduced 2026-07-27 on herdr: `herdr pane list` reported no `agent` field
 # and agent_status "unknown" for the pane the whole time). Callers use this to
-# decide whether an authoritative presence read may override a busy-looking
-# frame.
+# decide whether an authoritative presence read may override that busy-state
+# record.
 #
 # herdr qualifies: `agent get` answers from herdr's own agent registry
 # (agent_not_found for an agent-less pane - bin/backends/herdr.sh's
@@ -927,9 +927,9 @@ fm_backend_agent_alive() {  # <backend> <target>
 # verdict comes from the pane's FOREGROUND COMMAND being a bare shell, and a
 # live harness running a shell tool call legitimately shows a shell there. That
 # is accurate enough for the session-start recovery sweep (where a wrong answer
-# is reconciled against the recorded work) but would mint false stales in the
-# per-poll busy path, so tmux stays on its frame-signature behavior. zellij,
-# orca, and cmux have no recovery classifier at all (`unverified`).
+# is reconciled against the recorded work) but is not safe to override a
+# semantic busy record during current-state reconciliation. zellij, orca, and
+# cmux have no recovery classifier at all (`unverified`).
 fm_backend_has_agent_presence() {  # <backend>
   case "$1" in
     herdr) return 0 ;;
@@ -944,8 +944,8 @@ fm_backend_has_agent_presence() {  # <backend>
 # verdict - returns 1, so an inconclusive read never overrides a caller's
 # existing classification.
 #
-# The second read is what keeps a transient agent-status flap mid-frame-repaint
-# from instantly reading as dead: a genuinely dead endpoint stays dead across
+# The second read is what keeps a transient agent-status flap from instantly
+# reading as dead: a genuinely dead endpoint stays dead across
 # the gap, while a momentary deregistration re-reads alive. It costs nothing on
 # the common path, because a live agent already loses on the FIRST read.
 FM_AGENT_ABSENT_CONFIRM_SECS=${FM_AGENT_ABSENT_CONFIRM_SECS:-2}
