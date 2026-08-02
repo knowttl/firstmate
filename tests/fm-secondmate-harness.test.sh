@@ -242,7 +242,14 @@ SH
   [ ! -s "$err" ] || fail "fm-harness wrote basename option noise for literal -zsh: $(cat "$err")"
 
   err="$dir/fm-session-lock-ancestry.err"
-  got=$(PATH="$fakebin:$BASE_PATH" bash -c \
+  # FORK DRIFT vs upstream: this fork's fm_process_row reads /proc before ps
+  # (the fork-frugal ancestry fast path pinned by
+  # tests/fm-claude-stop-autoarm.test.sh), so on Linux it would walk the real
+  # process tree and never observe the ps stub above. Diverting the proc root
+  # to a nonexistent path forces the portable ps fallback, which is the form
+  # this fixture stubs. Upstream needs no override because it only ever calls
+  # ps. Drop this line if upstream adopts an equivalent fast path.
+  got=$(PATH="$fakebin:$BASE_PATH" FM_PROC_ROOT_OVERRIDE="$dir/no-proc" bash -c \
     '. "$0/bin/fm-session-lock-lib.sh"; fm_harness_ancestry_pid' "$ROOT" 2>"$err")
   [ "$got" = 4242 ] || fail "session-lock dash-leading ancestry selected '$got', expected pid 4242"
   [ ! -s "$err" ] || fail "session-lock ancestry wrote basename option noise for literal -zsh: $(cat "$err")"
