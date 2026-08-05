@@ -310,6 +310,28 @@ outcome: failed
 EOF
 }
 
+# The shape of the 2026-08-04 record: the pipeline reached ci, monitored the
+# PR, then the run died there (daemon shutdown), so status/outcome are failed
+# for the CURRENT head even though the PR is open and green.
+run_failed_in_ci() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: failed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: "https://github.com/o/r/pull/2"
+  findings: none
+  steps[4]{step,status,findings,duration_ms}:
+    intent,completed,0,0
+    review,completed,0,0
+    push,completed,0,0
+    ci,failed,0,0
+outcome: failed
+error: daemon shutting down
+EOF
+}
+
 run_ci_monitoring() {  # <branch>
   cat <<EOF
 run:
@@ -701,6 +723,68 @@ test_terminal_failed() {
   assert_contains "$out" "state: failed" "failed run -> failed"
   assert_contains "$out" "source: run-step" "failed -> run-step source"
   pass "terminal failed run is authoritative"
+}
+
+# Regression for the 2026-08-04 incident: the run for the CURRENT head died in
+# its ci step (daemon shutdown) after that step had already reported checks
+# green, while the PR stayed open and green. Reading `failed` here reported a
+# healthy parked crew as a failure.
+test_terminal_failed_after_checks_green_surfaces_done() {
+  reset_fakes
+  local d; d=$(new_case failed-after-green)
+  make_repo_on_branch "$d/wt" fm/feat-failgreen
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-failgreen.meta" "window=fm:fm-feat-failgreen" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_failed_in_ci fm/feat-failgreen)"
+  FM_FAKE_CI_LOGS=$(cat <<'EOF'
+no CI checks reported yet, waiting for checks to register...
+no CI checks reported - still monitoring until merged or closed
+error: context canceled
+EOF
+)
+  local out; out=$(run_crew_state "$d" feat-failgreen)
+  assert_contains "$out" "state: done" "aborted run after checks green -> done"
+  assert_contains "$out" "source: run-step" "aborted run after green -> run-step source"
+  assert_contains "$out" "checks green" "detail reports the PR is ready for review"
+  assert_contains "$out" "run failed after checks green" "detail keeps the terminal run fact"
+  assert_not_contains "$out" "state: failed" "healthy green PR must not read as failed"
+  pass "terminal failure after checks green surfaces done"
+}
+
+# The other half of the same rule: real red checks must still read failed.
+test_terminal_failed_with_red_checks_stays_failed() {
+  reset_fakes
+  local d; d=$(new_case failed-red-checks)
+  make_repo_on_branch "$d/wt" fm/feat-failred
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-failred.meta" "window=fm:fm-feat-failred" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_failed_in_ci fm/feat-failred)"
+  FM_FAKE_CI_LOGS=$(cat <<'EOF'
+all CI checks passed - still monitoring until merged or closed
+base branch advanced (aaaa..bbbb), re-arming CI monitor timeout
+CI checks failed
+EOF
+)
+  local out; out=$(run_crew_state "$d" feat-failred)
+  assert_contains "$out" "state: failed" "red checks keep the run failed"
+  assert_contains "$out" "source: run-step" "red checks -> run-step source"
+  assert_not_contains "$out" "state: done" "a genuine CI failure is never reported done"
+  pass "terminal failure with red checks stays failed"
+}
+
+# A run that failed BEFORE ci ran has no ci log at all: nothing to reinterpret.
+test_terminal_failed_before_ci_stays_failed() {
+  reset_fakes
+  local d; d=$(new_case failed-before-ci)
+  make_repo_on_branch "$d/wt" fm/feat-failearly
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-failearly.meta" "window=fm:fm-feat-failearly" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_failed fm/feat-failearly)"
+  FM_FAKE_CI_LOGS=""
+  local out; out=$(run_crew_state "$d" feat-failearly)
+  assert_contains "$out" "state: failed" "pre-ci failure keeps the run failed"
+  assert_not_contains "$out" "state: done" "pre-ci failure is never reported done"
+  pass "terminal failure before ci stays failed"
 }
 
 # (e) cross-branch attribution: `axi status` returns ANOTHER branch's run (the
@@ -1382,6 +1466,9 @@ test_top_level_fixing_ci_running_after_green_stays_working
 test_top_level_fixing_done_log_stays_working
 test_terminal_passed
 test_terminal_failed
+test_terminal_failed_after_checks_green_surfaces_done
+test_terminal_failed_with_red_checks_stays_failed
+test_terminal_failed_before_ci_stays_failed
 test_cross_branch_attribution_via_runs_list
 test_cross_branch_attribution_picks_most_recent_row
 test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status
