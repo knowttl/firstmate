@@ -34,7 +34,13 @@
 #      the active step is ci, `axi status` alone cannot tell "still waiting on
 #      checks" from "checks green, waiting on merge" (see nm_ci_checks_state) -
 #      a ci-step log-tail check overrides working -> done once checks read
-#      green, so a green PR is never silently read as still-validating.
+#      green, so a green PR is never silently read as still-validating. The same
+#      ci-step log-tail check also overrides a TERMINAL failed/cancelled run to
+#      done when the ci step had already reported checks green: ci is the last
+#      step, so a failure recorded after that point is the run being aborted
+#      (daemon shutdown, cancel, monitor timeout), not the code failing. A run
+#      that failed before ci, or whose checks actually went red, has no green
+#      marker and still reads failed.
 #   3. Reconcile the status log: if its last line says needs-decision/blocked but
 #      the run-step shows the run moved on, the log is deterministically stale and
 #      is flagged superseded. A genuinely parked run plus a needs-decision log
@@ -534,6 +540,28 @@ if [ "$HAVE_RUN" = 1 ]; then
             CI_LOG_STATE=not-ready
             ;;
         esac
+      fi
+    fi
+
+    # Second root cause of the same class as the PR #252 incident, observed
+    # 2026-08-04 on a run whose ci step recorded "no CI checks reported - still
+    # monitoring until merged or closed" and then died with "error: daemon
+    # shutting down": `axi status` reported status/outcome failed for the
+    # CURRENT head while the PR was open, mergeable and green, so this helper
+    # read `failed` for a healthy parked crew. ci is the LAST pipeline step, so
+    # once its own log says checks are green there is nothing left that can fail
+    # on merit - a terminal failed/cancelled after that point is the run being
+    # aborted, and the PR is ready for review exactly as an outcome of
+    # checks-passed would be. A run that failed at an earlier step has an empty
+    # ci log (unknown), and genuinely red checks leave a red marker (not-ready),
+    # so neither is masked. Full-run only: the coarse runs-list path has no run
+    # id of its own, and probing another branch's ci log there is the mistake
+    # test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status pins.
+    if [ "$RUN_STATE" = failed ]; then
+      CI_LOG_STATE=$(nm_ci_checks_state)
+      if [ "$CI_LOG_STATE" = green ]; then
+        RUN_DETAIL="checks green: PR ready for review ($RUN_DETAIL after checks green)"
+        RUN_STATE="done"
       fi
     fi
   fi
