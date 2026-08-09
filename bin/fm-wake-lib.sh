@@ -903,7 +903,7 @@ fm_wake_append_line() {  # <block-var-name> <line> <item-byte-cap>
 fm_wake_print_annotations_locked() {  # <deduped-raw-rows>
   local rows=$1 raw_manifest retry_manifest manifest status_key mode path prefix line suffix bytes
   local cursor block earlier_block latest_block earlier_end earlier_line
-  local pending='' disposition cursor_target available candidate_line candidate
+  local pending_rows='' disposition cursor_target available candidate_line candidate
   local defer_block deferred emitted_count emitted_end partial_block
   local output='' used=0 omitted=0 read_omitted=0 annotation_marker marker_reserve=192
   local tail_bytes=8192 item_bytes=2048 global_bytes=8192 read_cap=8 reads=0
@@ -979,7 +979,7 @@ EOF2
       used=$((used + bytes))
       disposition=complete
       cursor_target=$FM_WAKE_EVENT_SIZE
-      pending="$pending$status_key	$cursor_target	$disposition
+      pending_rows="$pending_rows$status_key	$cursor_target	$disposition
 "
       continue
     fi
@@ -1019,7 +1019,7 @@ EOF2
     used=$((used + ${#block}))
     disposition=partial
     cursor_target=$emitted_end
-    pending="$pending$status_key	$cursor_target	$disposition
+    pending_rows="$pending_rows$status_key	$cursor_target	$disposition
 "
   done <<EOF
 $manifest
@@ -1031,7 +1031,7 @@ EOF
     fm_wake_cursor_write "$status_key" "$cursor_target"
     [ "$disposition" != complete ] || fm_wake_retry_clear "$status_key"
   done <<EOF
-$pending
+$pending_rows
 EOF
   if [ "$omitted" -gt 0 ]; then
     annotation_marker="wake annotation: $omitted annotations omitted (global enrichment byte cap)"
