@@ -167,6 +167,15 @@ status_is_paused_or_captain_held() {  # <status-line>
 # one-open-decision-per-task behavior (a bare "resolved:" closes "default").
 # The three parsers are pure reads of a single line; the verb parser strips any
 # key token before the colon so the leading word is recovered cleanly.
+# The canonical placement above is what writers emit, but the key parser also
+# accepts the token when it LEADS the note ("<verb>: [key=<slug>] <note>"),
+# because the verb parser already treats such a line as a real transition.
+# Reading the key from only the pre-colon prefix folded every such near-miss line
+# into the single "default" bucket, where one open decision masks another and an
+# unrelated "resolved" closes a decision it does not name.
+# A token buried further inside the note is prose, NOT a key, and still yields
+# "default": otherwise a line merely quoting "[key=q1]" could take over or close
+# a decision it only mentions. Leading position is what separates the two.
 status_line_verb() {  # <status-line> -> leading verb word
   local v=${1%%:*}
   v=${v%%\[key=*}
@@ -181,17 +190,26 @@ status_line_note() {  # <status-line> -> text after the first colon, trimmed
   esac
 }
 _fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
-  local prefix=${1%%:*} k
+  local prefix=${1%%:*} note k=''
   case "$prefix" in
-    *\[key=*\]*)
-      k=${prefix#*\[key=}
-      k=${k%%\]*}
-      case "$k" in
-        ''|*[!A-Za-z0-9._-]*) return 1 ;;
-        *) printf '%s' "$k" ;;
+    *\[key=*\]*) k=${prefix#*\[key=} ;;
+    *)
+      case "$1" in
+        *:*)
+          note=${1#*:}
+          note=${note#"${note%%[![:space:]]*}"}
+          case "$note" in
+            \[key=*\]*) k=${note#\[key=} ;;
+          esac
+          ;;
       esac
       ;;
-    *) printf 'default' ;;
+  esac
+  [ -n "$k" ] || { printf 'default'; return 0; }
+  k=${k%%\]*}
+  case "$k" in
+    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+    *) printf '%s' "$k" ;;
   esac
 }
 # Drop the record for <key> from a newline-terminated "<key>\t<verb>\t<note>" set.

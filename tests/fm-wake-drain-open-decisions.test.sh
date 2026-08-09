@@ -215,8 +215,92 @@ test_over_long_decision_note_is_capped_with_a_marker() {
   pass "an over-long open decision is cut to its per-item budget with the shared truncation marker"
 }
 
+# The canonical writer format puts the key token before the colon, but the verb
+# parser already accepts "<verb>: [key=<slug>] <note>" as a real transition. When
+# the key parser read only the pre-colon prefix, every such near-miss line folded
+# into the single "default" bucket: one open decision masked another, and an
+# unrelated resolution closed a decision it never named. Observed 2026-08-08.
+test_key_after_the_colon_files_under_its_real_key() {
+  local dir state out
+  dir=$(make_case key-after-colon)
+  state="$dir/state"
+  out="$dir/drain.out"
+  printf 'needs-decision: [key=axi-tool-floors] pick the floor policy\n' > "$state/task-late-key.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on an after-colon key token"
+
+  grep -F 'task-late-key' "$out" | grep -F '[key=axi-tool-floors]' >/dev/null \
+    || fail "an after-colon key token was not filed under its real key: $(cat "$out")"
+
+  # The canonical closing line fm-send writes must still close it across placements.
+  printf 'resolved [key=axi-tool-floors]: floors chosen\n' >> "$state/task-late-key.status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed after the canonical close"
+  if grep -F 'OPEN DECISIONS' "$out" >/dev/null; then
+    fail "a canonical resolved line did not close an after-colon decision: $(cat "$out")"
+  fi
+  pass "a key token written after the colon files, and closes, under its real key"
+}
+
+test_distinct_after_colon_decisions_do_not_collapse() {
+  local dir state out
+  dir=$(make_case after-colon-distinct)
+  state="$dir/state"
+  out="$dir/drain.out"
+  printf 'needs-decision: [key=k1] first open decision\n' > "$state/task-two.status"
+  printf 'needs-decision: [key=k2] second open decision\n' >> "$state/task-two.status"
+  # An unrelated resolution must clear neither of them.
+  printf 'resolved: [key=k3] an unrelated decision closed\n' >> "$state/task-two.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on two after-colon decisions"
+
+  grep -F 'task-two' "$out" | grep -F '[key=k1]' >/dev/null \
+    || fail "the first after-colon decision was masked by the second: $(cat "$out")"
+  grep -F 'task-two' "$out" | grep -F '[key=k2]' >/dev/null \
+    || fail "the second after-colon decision is missing: $(cat "$out")"
+  pass "two distinct after-colon decisions both stay open, and an unrelated resolution closes neither"
+}
+
+test_malformed_key_token_opens_no_decision() {
+  local dir state out
+  dir=$(make_case malformed-key)
+  state="$dir/state"
+  out="$dir/drain.out"
+  # A slug outside A-Za-z0-9._- is not a key in either placement; such a line is
+  # not a decision transition at all and must not open a "default" decision.
+  printf 'needs-decision: [key=bad key] malformed after the colon\n' > "$state/task-bad-late.status"
+  printf 'needs-decision [key=bad key]: malformed before the colon\n' > "$state/task-bad-early.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on malformed key tokens"
+
+  if grep -F 'OPEN DECISIONS' "$out" >/dev/null; then
+    fail "a malformed key token opened a decision: $(cat "$out")"
+  fi
+  pass "a malformed key token opens no decision, in either placement"
+}
+
+test_a_key_token_buried_in_note_prose_is_not_a_key() {
+  local dir state out
+  dir=$(make_case prose-key)
+  state="$dir/state"
+  out="$dir/drain.out"
+  # Only a token LEADING the note is a near-miss key. One quoted further inside
+  # the prose is just text, so it can neither take over nor close that decision.
+  printf 'needs-decision [key=q1]: real choice\n' > "$state/task-prose.status"
+  printf 'resolved: docs still mention [key=q1] somewhere\n' >> "$state/task-prose.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on a key token quoted in prose"
+
+  grep -F 'task-prose' "$out" | grep -F '[key=q1]' >/dev/null \
+    || fail "a key token quoted in note prose closed the decision it only mentions: $(cat "$out")"
+  pass "a key token buried in note prose neither opens nor closes that keyed decision"
+}
+
 test_buried_decision_still_surfaces
 test_over_long_decision_note_is_capped_with_a_marker
+test_a_key_token_buried_in_note_prose_is_not_a_key
+test_key_after_the_colon_files_under_its_real_key
+test_distinct_after_colon_decisions_do_not_collapse
+test_malformed_key_token_opens_no_decision
 test_explicit_resolution_closes_it
 test_later_unrelated_terminal_line_does_not_close_it
 test_reserved_key_namespace_is_owned_by_its_library
