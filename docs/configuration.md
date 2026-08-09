@@ -230,6 +230,10 @@ When the harness token is absent or `default`, secondmate launch falls back thro
 Changing this pin affects the next secondmate spawn or control-plane relaunch; the relaunch profile rules are owned by [`docs/agent-control.md`](agent-control.md#transactional-relaunch).
 An explicit harness argument to `fm-spawn.sh` still overrides either config file for that spawn only.
 An explicit `--model` or `--effort` overrides the matching token from `config/secondmate-harness`; for a local route, an explicit harness or raw launch command starts with clean model and effort defaults unless those flags are also passed.
+`config/secondmate-harness.<id>` is an optional per-secondmate override in that same format, read before the fleet-wide file when the spawn or relaunch names that secondmate id.
+Its line is taken whole, so its harness, model, and effort are never mixed with the fleet-wide line's tokens, and everything above applies to it unchanged, including the `default` and bare-harness cases and the precedence of an explicit per-spawn harness, `--model`, or `--effort`.
+A per-id file that is absent, or that holds only blank and comment lines, falls back to `config/secondmate-harness`, so an unpinned secondmate resolves exactly as it did before this override existed.
+Both files are the primary's own knobs, resolved on every spawn and control-plane relaunch, so a per-id pin is durable across recovery, `/updatefirstmate`, and restart; neither is inherited into a secondmate home.
 Remote secondmate routes accept verified harness adapters only and reject raw launch commands.
 When `config/crew-dispatch.json` exists, crewmate and scout spawns require an explicit resolved harness instead of automatically falling back to `config/crew-harness`.
 The inherited-local-material contract is owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md); its harness-relevant consequence is that a secondmate's own crewmates use the primary's dispatch profiles and static harness value.
