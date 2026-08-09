@@ -479,6 +479,42 @@ fm_lock_release() {
   rmdir "$lockdir" 2>/dev/null || true
 }
 
+fm_meta_lock_path() {
+  local meta=$1 dir base id
+  dir=${meta%/*}
+  base=${meta##*/}
+  [ "$dir" != "$meta" ] || dir=.
+  case "$base" in
+    *.meta) id=${base%.meta} ;;
+    *) return 1 ;;
+  esac
+  case "$id" in
+    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  printf '%s/.meta-%s.lock\n' "$dir" "$id"
+}
+
+# fm_task_set_lock_path: the per-home lock guarding WHICH tasks exist in a home,
+# as opposed to fm_meta_lock_path, which guards one task's record.
+#
+# A per-task lock cannot protect a task that does not exist yet. Forced
+# secondmate teardown enumerates a home's task set, locks what it found, and
+# then re-enumerates while removing; a fresh spawn publishing a record inside
+# that window is invisible to the first enumeration and visible to the second,
+# so it gets destructively processed while never lifecycle-locked (reproduced
+# with real agents: a record published 0.249s after teardown began was removed
+# and its worktree returned to the pool, with both commands reporting success).
+# Holding this lock from enumeration through cleanup makes the two operations
+# serialize: either the spawn publishes first and the teardown's preflight
+# covers it, or the teardown owns the set and the spawn refuses. Both directions
+# fail closed.
+fm_task_set_lock_path() {  # <state-dir>
+  local state=$1
+  [ -n "$state" ] || return 1
+  case "$state" in *[$'\n\r\t']*) return 1 ;; esac
+  printf '%s/.task-set.lock\n' "$state"
+}
+
 fm_failure_episode_reset() {
   local state=$1 mode=${2:-acquire} lock current pid acquired=0 path
   lock="$state/.turnend-claude-blocks.lock"
@@ -867,7 +903,7 @@ fm_wake_append_line() {  # <block-var-name> <line> <item-byte-cap>
 fm_wake_print_annotations_locked() {  # <deduped-raw-rows>
   local rows=$1 raw_manifest retry_manifest manifest status_key mode path prefix line suffix bytes
   local cursor block earlier_block latest_block earlier_end earlier_line
-  local pending='' disposition cursor_target available candidate_line candidate
+  local pending_rows='' disposition cursor_target available candidate_line candidate
   local defer_block deferred emitted_count emitted_end partial_block
   local output='' used=0 omitted=0 read_omitted=0 annotation_marker marker_reserve=192
   local tail_bytes=8192 item_bytes=2048 global_bytes=8192 read_cap=8 reads=0
@@ -943,7 +979,7 @@ EOF2
       used=$((used + bytes))
       disposition=complete
       cursor_target=$FM_WAKE_EVENT_SIZE
-      pending="$pending$status_key	$cursor_target	$disposition
+      pending_rows="$pending_rows$status_key	$cursor_target	$disposition
 "
       continue
     fi
@@ -983,7 +1019,7 @@ EOF2
     used=$((used + ${#block}))
     disposition=partial
     cursor_target=$emitted_end
-    pending="$pending$status_key	$cursor_target	$disposition
+    pending_rows="$pending_rows$status_key	$cursor_target	$disposition
 "
   done <<EOF
 $manifest
@@ -995,7 +1031,7 @@ EOF
     fm_wake_cursor_write "$status_key" "$cursor_target"
     [ "$disposition" != complete ] || fm_wake_retry_clear "$status_key"
   done <<EOF
-$pending
+$pending_rows
 EOF
   if [ "$omitted" -gt 0 ]; then
     annotation_marker="wake annotation: $omitted annotations omitted (global enrichment byte cap)"
