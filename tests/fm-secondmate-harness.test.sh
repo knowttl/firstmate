@@ -41,6 +41,11 @@
 #      spawn only when the harness also resolves from that file, so the pin is
 #      durable across every respawn while explicit per-spawn harness/model/effort
 #      flags still win.
+#   D) Per-secondmate override. config/secondmate-harness.<id> pins ONE secondmate
+#      differently from the fleet: it is read before config/secondmate-harness for
+#      that id, its line wins whole, and an absent or content-free file falls back
+#      so every other id and the bare (no-id) resolution are unchanged. It is a
+#      primary-only knob and is never inherited, like the fleet-wide file.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -136,6 +141,73 @@ extra whitespace between tokens is tolerated^grok   grok-4    xhigh^grok^grok-4^
 leading/trailing blank lines and a comment are skipped^# a comment\n\nclaude opus low\n^claude^opus^low
 ROWS
   pass "C1 fm-harness.sh secondmate-model/secondmate-effort resolve the optional tokens; bare harness stays empty (backward-compat)"
+}
+
+# ===========================================================================
+# D) config/secondmate-harness.<id> per-secondmate override resolution
+# ===========================================================================
+# The per-id file is consulted before the fleet-wide one, for that id only, and
+# its line is taken WHOLE - never mixed with the fleet-wide line's tokens. An
+# absent or content-free per-id file, and a bare (no-id) call, resolve exactly
+# as they did before the override existed.
+resolve_secondmate_triple() {  # <config-dir> [<id>] -> "<harness>/<model>/<effort>"
+  local cfg=$1 id=${2:-} h m e
+  h=$(CLAUDECODE=1 FM_CONFIG_OVERRIDE="$cfg" "$ROOT/bin/fm-harness.sh" secondmate "$id")
+  m=$(CLAUDECODE=1 FM_CONFIG_OVERRIDE="$cfg" "$ROOT/bin/fm-harness.sh" secondmate-model "$id")
+  e=$(CLAUDECODE=1 FM_CONFIG_OVERRIDE="$cfg" "$ROOT/bin/fm-harness.sh" secondmate-effort "$id")
+  printf '%s/%s/%s\n' "$h" "$m" "$e"
+}
+
+test_secondmate_per_id_override_resolution() {
+  local cfg got
+  cfg="$TMP_ROOT/per-id/config"
+  mkdir -p "$cfg"
+  printf 'codex\n' > "$cfg/crew-harness"
+  printf 'claude claude-opus-4-8 high\n' > "$cfg/secondmate-harness"
+  printf 'claude claude-fable-5 medium\n' > "$cfg/secondmate-harness.pinned"
+
+  got=$(resolve_secondmate_triple "$cfg" pinned)
+  [ "$got" = "claude/claude-fable-5/medium" ] \
+    || fail "per-id override did not win for its own id (got '$got')"
+  got=$(resolve_secondmate_triple "$cfg" unpinned)
+  [ "$got" = "claude/claude-opus-4-8/high" ] \
+    || fail "an id with no override file did not fall back to the fleet-wide file (got '$got')"
+  got=$(resolve_secondmate_triple "$cfg")
+  [ "$got" = "claude/claude-opus-4-8/high" ] \
+    || fail "the bare no-id resolution changed while a per-id file exists (got '$got')"
+
+  # A per-id line is whole: a bare harness there yields NO model/effort even
+  # though the fleet-wide file carries both.
+  printf 'grok\n' > "$cfg/secondmate-harness.pinned"
+  got=$(resolve_secondmate_triple "$cfg" pinned)
+  [ "$got" = "grok//" ] \
+    || fail "a bare per-id harness leaked the fleet-wide model/effort tokens (got '$got')"
+
+  # "default" in the per-id file defers to the crew chain, same as the
+  # fleet-wide file's own "default" case, and reads no tokens from either file.
+  printf 'default claude-fable-5 medium\n' > "$cfg/secondmate-harness.pinned"
+  got=$(resolve_secondmate_triple "$cfg" pinned)
+  [ "$got" = "codex//" ] \
+    || fail "a per-id 'default' harness did not defer to the crew chain with empty tokens (got '$got')"
+
+  # A content-free per-id file falls back rather than resolving to nothing.
+  printf '# only a comment\n\n' > "$cfg/secondmate-harness.pinned"
+  got=$(resolve_secondmate_triple "$cfg" pinned)
+  [ "$got" = "claude/claude-opus-4-8/high" ] \
+    || fail "a comment-only per-id file did not fall back to the fleet-wide file (got '$got')"
+
+  # Removing the override reverts that id with no residual state.
+  rm -f "$cfg/secondmate-harness.pinned"
+  got=$(resolve_secondmate_triple "$cfg" pinned)
+  [ "$got" = "claude/claude-opus-4-8/high" ] \
+    || fail "removing the per-id file did not revert to the fleet-wide pin (got '$got')"
+
+  # An id that could otherwise name a file outside config/ never selects one.
+  got=$(resolve_secondmate_triple "$cfg" ../crew-harness)
+  [ "$got" = "claude/claude-opus-4-8/high" ] \
+    || fail "an id outside the task-id character set selected a file (got '$got')"
+
+  pass "D1 fm-harness.sh reads config/secondmate-harness.<id> before the fleet-wide file, whole-line, with unchanged bare behavior"
 }
 
 # ===========================================================================
@@ -346,8 +418,9 @@ test_propagate_lib() {
   [ -d "$dest/crew-harness" ] || fail "failed absence mirror removed the wrong path"
   rm -rf "$dest/crew-harness"
 
-  # 5. secondmate-harness is never inherited; backend still is
+  # 5. secondmate-harness and its per-id overrides are never inherited; backend still is
   printf 'grok\n' > "$src/secondmate-harness"
+  printf 'grok grok-4 high\n' > "$src/secondmate-harness.pinned"
   printf '{"default":{"harness":"codex"}}\n' > "$src/crew-dispatch.json"
   printf 'codex\n' > "$src/crew-harness"
   printf 'manual\n' > "$src/backlog-backend"
@@ -356,6 +429,8 @@ test_propagate_lib() {
   mkdir -p "$d/home2/config" "$d/home2/state"
   propagate_inheritable_config "$src" "$d/home2/config"
   [ -e "$d/home2/config/secondmate-harness" ] && fail "secondmate-harness was inherited (must not be)"
+  [ -e "$d/home2/config/secondmate-harness.pinned" ] \
+    && fail "a per-id secondmate-harness override was inherited (must not be)"
   [ "$(cat "$d/home2/config/crew-dispatch.json")" = '{"default":{"harness":"codex"}}' ] || fail "crew-dispatch.json not propagated alongside"
   [ "$(cat "$d/home2/config/crew-harness")" = codex ] || fail "crew-harness not propagated alongside"
   [ "$(cat "$d/home2/config/backlog-backend")" = manual ] || fail "backlog-backend not propagated alongside"
@@ -779,6 +854,73 @@ test_spawn_explicit_effort_overrides_secondmate_harness_token() {
   assert_contains "$launch" "--effort 'low'" "explicit-effort: launch did not use the explicit --effort"
   assert_not_contains "$launch" "--effort 'high'" "explicit-effort: launch leaked the file's effort token"
   pass "C6 spawn: an explicit --effort overrides config/secondmate-harness's effort token; the file's model token still applies"
+}
+
+# D integration: a --secondmate spawn resolves the per-id override for the id it
+# is launching, so one secondmate can carry a different model/effort from the
+# fleet while every other id keeps the fleet-wide pin. The spawn path IS the
+# recovery/update path, so this is what makes the per-id pin durable.
+test_spawn_per_id_override_and_fallback() {
+  local w meta launchlog launch out status
+  w="$TMP_ROOT/spawn-per-id"
+  launchlog="$w/launch.log"
+  mkdir -p "$w/home/config"
+  printf 'claude claude-opus-4-8 high\n' > "$w/home/config/secondmate-harness"
+  printf 'claude claude-fable-5 medium\n' > "$w/home/config/secondmate-harness.pinned"
+  make_seeded_home "$w/pinned" pinned
+  make_seeded_home "$w/plain" plain
+
+  out=$(spawn_secondmate_capture "$w" pinned "$w/pinned" "$launchlog" 2>&1); status=$?
+  expect_code 0 "$status" "pinned secondmate spawn should succeed"$'\n'"$out"
+  meta="$w/home/state/pinned.meta"
+  [ "$(meta_field "$meta" model)" = claude-fable-5 ] \
+    || fail "per-id spawn: meta model not claude-fable-5 (got '$(meta_field "$meta" model)')"
+  [ "$(meta_field "$meta" effort)" = medium ] \
+    || fail "per-id spawn: meta effort not medium (got '$(meta_field "$meta" effort)')"
+  launch=$(cat "$launchlog")
+  assert_contains "$launch" "--model 'claude-fable-5' --effort 'medium'" \
+    "per-id spawn: launch did not carry the per-id model/effort"
+
+  spawn_secondmate_capture "$w" plain "$w/plain" "$launchlog" >/dev/null 2>&1
+  meta="$w/home/state/plain.meta"
+  [ "$(meta_field "$meta" model)" = claude-opus-4-8 ] \
+    || fail "override-less spawn: meta model not claude-opus-4-8 (got '$(meta_field "$meta" model)')"
+  [ "$(meta_field "$meta" effort)" = high ] \
+    || fail "override-less spawn: meta effort not high (got '$(meta_field "$meta" effort)')"
+  launch=$(cat "$launchlog")
+  assert_contains "$launch" "--model 'claude-opus-4-8' --effort 'high'" \
+    "override-less spawn: launch did not carry the fleet-wide model/effort"
+  assert_not_contains "$launch" "claude-fable-5" \
+    "override-less spawn: another id's per-id pin leaked into this launch"
+
+  pass "D2 spawn: config/secondmate-harness.<id> pins that one secondmate's model/effort while other ids keep the fleet-wide pin"
+}
+
+# Precedence is unchanged by the override: explicit per-spawn flags still win.
+test_spawn_explicit_flags_override_per_id_file() {
+  local w meta launchlog launch
+  w="$TMP_ROOT/spawn-per-id-explicit"
+  launchlog="$w/launch.log"
+  mkdir -p "$w/home/config"
+  printf 'claude claude-opus-4-8 high\n' > "$w/home/config/secondmate-harness"
+  printf 'claude claude-fable-5 medium\n' > "$w/home/config/secondmate-harness.pinned"
+  make_seeded_home "$w/pinned" pinned
+
+  spawn_secondmate_capture "$w" pinned "$w/pinned" "$launchlog" \
+    --model sonnet --effort low >/dev/null 2>&1
+
+  meta="$w/home/state/pinned.meta"
+  [ "$(meta_field "$meta" model)" = sonnet ] \
+    || fail "per-id explicit: meta model not sonnet (got '$(meta_field "$meta" model)')"
+  [ "$(meta_field "$meta" effort)" = low ] \
+    || fail "per-id explicit: meta effort not low (got '$(meta_field "$meta" effort)')"
+  launch=$(cat "$launchlog")
+  assert_contains "$launch" "--model 'sonnet' --effort 'low'" \
+    "per-id explicit: launch did not use the explicit flags"
+  assert_not_contains "$launch" "claude-fable-5" \
+    "per-id explicit: launch leaked the per-id file's model token"
+
+  pass "D3 spawn: explicit --model/--effort still beat config/secondmate-harness.<id>"
 }
 
 test_spawn_explicit_harness_does_not_inherit_secondmate_harness_tokens() {
@@ -2465,6 +2607,7 @@ SH
 
 test_harness_resolution
 test_secondmate_model_effort_tokens
+test_secondmate_per_id_override_resolution
 test_pi_signed_detection_and_session_lock_identity
 test_dash_leading_process_names_are_basename_operands
 test_propagate_lib
@@ -2480,6 +2623,8 @@ test_spawn_secondmate_harness_model_token
 test_spawn_secondmate_harness_model_and_effort_tokens
 test_spawn_explicit_model_overrides_secondmate_harness_token
 test_spawn_explicit_effort_overrides_secondmate_harness_token
+test_spawn_per_id_override_and_fallback
+test_spawn_explicit_flags_override_per_id_file
 test_spawn_explicit_harness_does_not_inherit_secondmate_harness_tokens
 test_spawn_explicit_harness_uses_explicit_profile_axes
 test_spawned_secondmate_uses_its_harness_supervision_model

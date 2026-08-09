@@ -642,6 +642,49 @@ test_secondmate_relaunch_picks_up_the_configured_harness_pin() {
   pass "fm-control relaunch: a secondmate relaunch re-resolves its durable configured harness pin"
 }
 
+# The per-secondmate override config/secondmate-harness.<id> governs the id it
+# names, so a relaunch - one of the respawn paths that re-resolves the pin -
+# moves that one secondmate without touching the fleet-wide file.
+test_secondmate_relaunch_picks_up_the_per_id_harness_pin() {
+  local dir home out rc
+  dir=$(new_case smperid sm8)
+  home="$dir/home"
+  mkdir -p "$home/config"
+  printf 'claude fleet-model high\n' > "$home/config/secondmate-harness"
+  printf 'codex pinned-model medium\n' > "$home/config/secondmate-harness.sm8"
+  mkdir -p "$home/data/sm8"
+  printf '# secondmate brief\n' > "$home/data/sm8/brief.md"
+  fm_git_worktree "$dir/proj" "$dir/smhome" sm-branch
+  mkdir -p "$dir/smhome/state" "$dir/smhome/data" "$dir/smhome/bin"
+  printf 'sm8\n' > "$dir/smhome/.fm-secondmate-home"
+  printf '# agents\n' > "$dir/smhome/AGENTS.md"
+  {
+    echo "window=fmses:fm-sm8"
+    echo "endpoint_task_id=sm8"
+    echo "worktree=$dir/smhome"
+    echo "project=$dir/smhome"
+    echo "harness=claude"
+    echo "kind=secondmate"
+    echo "mode=secondmate"
+    echo "yolo=off"
+    echo "model=default"
+    echo "effort=default"
+    echo "home=$dir/smhome"
+  } > "$home/state/sm8.meta"
+  printf '%s\n' "fm-sm8" > "$dir/fake/windows"
+  printf '%s' "$dir/smhome" > "$dir/fake/cwd"
+  printf 'codex' > "$dir/fake/becomes"
+  out=$(run_control "$dir" sm8 relaunch); rc=$?
+  expect_code 0 "$rc" "a per-id pinned secondmate should relaunch"$'\n'"$out"
+  [ "$(journal_field "$dir" sm8 to_harness)" = codex ] \
+    || fail "the per-id pin's harness should win, got '$(journal_field "$dir" sm8 to_harness)'"
+  [ "$(journal_field "$dir" sm8 to_model)" = pinned-model ] \
+    || fail "the per-id pin's model should win, got '$(journal_field "$dir" sm8 to_model)'"
+  [ "$(journal_field "$dir" sm8 to_effort)" = medium ] \
+    || fail "the per-id pin's effort should win, got '$(journal_field "$dir" sm8 to_effort)'"
+  pass "fm-control relaunch: a secondmate relaunch re-resolves its per-id harness pin over the fleet-wide one"
+}
+
 test_secondmate_relaunch_ignores_invalid_configured_effort_before_stop() {
   local dir home out rc
   dir=$(new_case invalid-effort sm6)
@@ -1316,6 +1359,7 @@ test_prior_harness_turnend_registry_entry_is_cleared
 test_wiring_removal_failure_refuses_before_replacement_arm
 test_turnend_auth_paths_are_owned_by_the_control_adapter
 test_secondmate_relaunch_picks_up_the_configured_harness_pin
+test_secondmate_relaunch_picks_up_the_per_id_harness_pin
 test_secondmate_relaunch_ignores_invalid_configured_effort_before_stop
 test_secondmate_relaunch_onto_a_crewmate_only_adapter_refuses_before_stop
 test_explicit_secondmate_harness_ignores_configured_profile_axes
