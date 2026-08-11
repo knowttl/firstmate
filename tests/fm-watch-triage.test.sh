@@ -1596,7 +1596,7 @@ pe_case() {  # <dir> <command>...
 # captured, unhandled, queued result and no remaining poll work.
 seed_captured_procevent_result() {  # <dir>
   local dir=$1 i=0
-  pe_case "$dir" register lavish delivery-src -- \
+  pe_case "$dir" register atelier delivery-src -- \
     /bin/sh -c 'printf "session:\n  file: /a.html\n  status: waiting\n"' >/dev/null || return 1
   pe_case "$dir" reconcile >/dev/null || return 1
   while [ "$i" -lt 100 ]; do
@@ -1622,7 +1622,7 @@ test_procevent_captured_result_surfaces_proactively() {
   dir=$(make_case procevent-delivery); state="$dir/state"
   out="$dir/watch.out"; drain_out="$dir/drain.out"
   seed_captured_procevent_result "$dir" || fail "the fixture captured no process-event result"
-  grep -F "procevent lavish delivery-src 1" "$state/.wake-queue" >/dev/null \
+  grep -F "procevent atelier delivery-src 1" "$state/.wake-queue" >/dev/null \
     || fail "the captured result was never published to the durable queue"
 
   procevent_watch_bg "$dir" "$out"
@@ -1638,7 +1638,7 @@ test_procevent_captured_result_surfaces_proactively() {
   [ "$beacon_age" -lt 60 ] || fail "the surfacing watcher was not a healthy one (beacon age ${beacon_age}s)"
 
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the process-event wake failed"
-  grep "$(printf '\tcheck\t')" "$drain_out" | grep -F "procevent lavish delivery-src 1" >/dev/null \
+  grep "$(printf '\tcheck\t')" "$drain_out" | grep -F "procevent atelier delivery-src 1" >/dev/null \
     || fail "the process-event result was not queued for the drain that follows the wake"
   pass "a captured process-event result wakes a healthy watcher proactively, with no manual drain"
 }
@@ -1665,7 +1665,7 @@ test_procevent_unacknowledged_result_redrains_until_handled() {
     || fail "the successor did not report recovery for the unacknowledged result: $(cat "$out")"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$replay_out" 2> "$replay_err" \
     || fail "the successor could not re-drain the unacknowledged process-event result"
-  grep "$(printf '\tcheck\t')" "$replay_out" | grep -F 'procevent lavish delivery-src 1' >/dev/null \
+  grep "$(printf '\tcheck\t')" "$replay_out" | grep -F 'procevent atelier delivery-src 1' >/dev/null \
     || fail "the successor drain did not re-print the durable process-event row"
 
   pe_case "$dir" handled delivery-src 1 >/dev/null || fail "could not acknowledge the captured result"
