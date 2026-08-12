@@ -253,6 +253,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-trace-context-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh
 . "$SCRIPT_DIR/fm-remote-readiness-lib.sh"
+# shellcheck source=bin/fm-gh-account-lib.sh
+. "$SCRIPT_DIR/fm-gh-account-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -2716,6 +2718,19 @@ spawn_record_traceparent() {
 # process (go build, go test, ...) inherit it. Sent before the launch command so
 # the env is set when the agent starts; the brief sleep lets the export land.
 spawn_send_text_line "$T" "export GOTMPDIR=$TASK_TMP/gotmp"
+# Select the per-project GitHub account for the worker's gh calls (and the
+# no-mistakes pipeline it drives) by exporting GH_CONFIG_DIR at the correct
+# account config in the primary home's data/gh-config. Sent through the same
+# channel as GOTMPDIR, before launch, so the env is set when the agent starts.
+# Only for project workers (ship/scout); a secondmate spawn is not project work.
+# Resolves from the project's origin remote and stays silent when the origin does
+# not map to a known account or the config is absent, leaving the env unchanged.
+if [ "$KIND" != secondmate ]; then
+  GH_CONFIG_DIR_EXPORT=$(fm_gh_config_dir_for_spawn "$FM_HOME" "$PROJ_ABS" 2>/dev/null) || GH_CONFIG_DIR_EXPORT=
+  if [ -n "$GH_CONFIG_DIR_EXPORT" ]; then
+    spawn_send_text_line "$T" "export GH_CONFIG_DIR=$GH_CONFIG_DIR_EXPORT"
+  fi
+fi
 # Send through the exact channel that already ships GOTMPDIR, so every backend
 # and harness - ship, scout, and secondmate - gets it before launch. Skipped
 # entirely when trace context is off.
