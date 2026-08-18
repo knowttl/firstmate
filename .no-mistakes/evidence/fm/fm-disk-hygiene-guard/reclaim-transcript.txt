@@ -1,0 +1,28 @@
+### SAFEGUARD 1: reclaim build scratch on a LANDED, torn-down frontend worktree
+
+$ du -sh frontend-worktree   # before reclaim (the ~1.5G-class hoard, scaled here)
+2.3M	frontend-worktree
+
+$ git -C frontend-worktree status --porcelain --untracked-files=no   # tracked work is clean (landed)
+(empty output above = no modified tracked files)
+
+$ bin/fm-reclaim-build-scratch.sh frontend-worktree
+reclaim: removed 3 regenerable build-scratch path(s) under frontend-worktree
+exit=0
+
+$ du -sh frontend-worktree   # after reclaim
+208K	frontend-worktree
+
+--- what SURVIVED (precious) vs what was RECLAIMED (regenerable) ---
+SURVIVED : src/app.js
+SURVIVED : .env
+SURVIVED : .gitignore
+RECLAIMED: node_modules
+RECLAIMED: dist
+RECLAIMED: .next
+
+--- HARD-SAFETY probe: same worktree but with an UNCOMMITTED tracked edit ---
+$ bin/fm-reclaim-build-scratch.sh frontend-worktree   # must REFUSE, remove nothing
+reclaim: REFUSED: frontend-worktree has modified tracked files; leaving all scratch in place
+exit=1
+CONFIRMED: node_modules left intact when tracked work is modified

@@ -1,0 +1,27 @@
+### SAFEGUARD 2: low-disk alarm surfaced by bin/fm-guard.sh (the existing guard surface)
+
+--- healthy: config asks for 20 GiB headroom, filesystem has more -> guard is silent ---
+$ cat config/disk-guard
+20 /
+$ fm-guard.sh
+(no LOW DISK banner above = ample headroom, alarm correctly silent)
+
+--- fill: request an impossible headroom to force the below-threshold branch deterministically ---
+$ cat config/disk-guard
+999999999 /
+$ fm-guard.sh   # LOUD, warning-only banner the operator sees:
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  LOW DISK SPACE - BUILDS AND DEPLOYS ARE AT RISK
+●  / has 23.8G free, below the 999999999G headroom.
+●  A full disk fails a build or deploy with an error that names anything but the disk.
+●  Free space before dispatching more build work; finished worktrees are the usual hoard.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+guard-exit=0
+
+--- rate limit: an immediate re-run inside the window stays quiet (idempotent, non-spammy) ---
+$ fm-guard.sh   # second call, same window
+(quiet = alarm rate-limited, not repeated)
+
+--- recovery re-arms: a healthy threshold clears the marker so the next fill alarms immediately ---
+CONFIRMED: recovery cleared the rate-limit marker
