@@ -5,6 +5,12 @@
 # First, always warn if the firstmate primary checkout (FM_ROOT) is on a named
 # non-default branch, because that means firstmate-on-itself work landed in the
 # primary instead of an isolated worktree.
+# Second, always alarm when the watched filesystem's free space has fallen below
+# the configured headroom, so a fill is caught before it silently fails a build or
+# a deploy. That alarm warns only - it never deletes anything and never pauses
+# work - and is rate-limited to once per FM_DISK_GUARD_REPEAT_SECS per FM_HOME,
+# re-arming as soon as free space recovers. config/disk-guard owns the threshold
+# and the watched path (docs/configuration.md "Disk-space guard").
 # Then, if a task is in flight (a state/<id>.meta exists) or X-mode relay
 # polling is active (state/x-watch.check.sh exists) and supervision is not
 # healthy, prints a loud, clearly delimited banner so the agent cannot skim past
@@ -45,6 +51,12 @@ CONTINUE_LINE=${FM_GUARD_CONTINUE_LINE:-This is a supervision warning only; the 
 # Volatile, home-scoped episode marker: one line = the current stale-episode key.
 # Cleared when the home leaves the unhealthy state so a later episode re-arms.
 STALE_BANNER_MARKER="$STATE/.guard-watcher-stale-banner"
+
+# Volatile, home-scoped disk alarm marker: one line = the epoch of the last full
+# alarm. Removed when free space recovers so the next fill alarms immediately.
+DISK_ALARM_MARKER="$STATE/.guard-disk-space-alarm"
+DISK_REPEAT_SECS=${FM_DISK_GUARD_REPEAT_SECS:-3600}
+case "$DISK_REPEAT_SECS" in ''|*[!0-9]*) DISK_REPEAT_SECS=3600 ;; esac
 
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
@@ -121,6 +133,46 @@ fm_guard_clear_stale_banner() {
   rm -f "$STALE_BANNER_MARKER" 2>/dev/null || true
 }
 
+# Free-space threshold and watched path from config/disk-guard: the first
+# non-empty, non-comment line is "<min-free-gib> [<path>]". An absent file means
+# the built-in defaults; an unusable threshold is reported and falls back rather
+# than silently disabling the alarm. A threshold of 0 disables it.
+DISK_MIN_GIB=20
+DISK_PATH=/
+fm_guard_read_disk_config() {
+  local line min path
+  line=$(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$CONFIG/disk-guard" 2>/dev/null | head -1 || true)
+  [ -n "$line" ] || return 0
+  read -r min path _ <<EOF
+$line
+EOF
+  case "$min" in
+    ''|*[!0-9]*)
+      printf 'WARNING: config/disk-guard: ignoring invalid free-space threshold %s; using %s GiB.\n' \
+        "$min" "$DISK_MIN_GIB" >&2
+      ;;
+    *) DISK_MIN_GIB=$min ;;
+  esac
+  [ -z "$path" ] || DISK_PATH=$path
+}
+
+# Available 1024-byte blocks on the filesystem holding $1, or empty when it
+# cannot be read (POSIX df -Pk reports the same units everywhere).
+fm_guard_disk_free_kib() {
+  df -Pk "$1" 2>/dev/null | awk 'NR == 2 { print $4 }'
+}
+
+# Rate limit: the full alarm prints when no alarm was recorded, when the record
+# is unreadable, or when it is older than the repeat window.
+fm_guard_disk_alarm_due() {
+  local last now
+  last=$(cat "$DISK_ALARM_MARKER" 2>/dev/null || true)
+  last=${last%$'\n'}
+  case "$last" in ''|*[!0-9]*) return 0 ;; esac
+  now=$(date +%s)
+  [ "$((now - last))" -ge "$DISK_REPEAT_SECS" ]
+}
+
 # Worktree-tangle alarm, checked FIRST and independent of in-flight tasks: the
 # firstmate PRIMARY checkout (FM_ROOT) must stay on its default branch. If a
 # crewmate's branch/commits landed here instead of in its own isolated worktree,
@@ -146,6 +198,38 @@ if [ -n "$tangle_branch" ]; then
     fi
     printf '●%s\n' "$trule"
   } >&2
+fi
+
+# Low-disk alarm, checked independently of in-flight tasks: pooled build
+# worktrees and their install trees share one filesystem, and a fill fails the
+# next build or deploy with an error that looks like anything but a full disk.
+fm_guard_read_disk_config
+if [ "$DISK_MIN_GIB" -gt 0 ]; then
+  disk_free_kib=$(fm_guard_disk_free_kib "$DISK_PATH")
+  disk_alarm=
+  if [ -z "$disk_free_kib" ]; then
+    disk_alarm=$(printf 'cannot read free space on %s (check config/disk-guard).' "$DISK_PATH")
+  elif [ "$disk_free_kib" -lt "$((DISK_MIN_GIB * 1024 * 1024))" ]; then
+    disk_alarm=$(awk -v k="$disk_free_kib" -v p="$DISK_PATH" -v m="$DISK_MIN_GIB" \
+      'BEGIN { printf "%s has %.1fG free, below the %sG headroom.", p, k / 1048576, m }')
+  fi
+  if [ -n "$disk_alarm" ]; then
+    if fm_guard_disk_alarm_due; then
+      [ "$READ_ONLY" -eq 1 ] || date +%s >"$DISK_ALARM_MARKER" 2>/dev/null || true
+      drule='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+      {
+        printf '●%s\n' "$drule"
+        printf '●  LOW DISK SPACE - BUILDS AND DEPLOYS ARE AT RISK\n'
+        printf '●  %s\n' "$disk_alarm"
+        printf '●  A full disk fails a build or deploy with an error that names anything but the disk.\n'
+        printf '●  Free space before dispatching more build work; finished worktrees are the usual hoard.\n'
+        printf '●  %s\n' "$CONTINUE_LINE"
+        printf '●%s\n' "$drule"
+      } >&2
+    fi
+  elif [ "$READ_ONLY" -ne 1 ]; then
+    rm -f "$DISK_ALARM_MARKER" 2>/dev/null || true
+  fi
 fi
 
 # Compute supervision need and watcher-beacon freshness via the shared

@@ -133,6 +133,14 @@
 #     root still exists, so the account's healthy LaunchAgent worker and every
 #     live remote secondmate worker are out of scope. Best effort: a sweep
 #     failure never blocks this teardown.
+#   Fix 4 - reclaim regenerable build scratch. `treehouse return` resets tracked
+#     content but leaves git-ignored trees in place, so each pooled worktree keeps
+#     the full install tree its last task built (measured 2026-08-18: ~1.5G of
+#     node_modules per frontend worktree, never reclaimed, filling the pool disk
+#     until a build failed). bin/fm-reclaim-build-scratch.sh owns the removal
+#     rules and its own independent safety gate; it runs only here, after every
+#     landed-work refusal above has passed and the worktree's processes are
+#     reaped, and its refusal never blocks teardown.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -2385,6 +2393,12 @@ fi
 if [ "$KIND" != secondmate ]; then
   conclude_task_no_mistakes_run "$WT"
   reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
+  # Fix 4 (see script header): reclaim regenerable build scratch before the
+  # worktree goes back to the pool. Best effort - its own refusal, or any
+  # failure, never blocks this teardown.
+  if [ -d "$WT" ]; then
+    "$SCRIPT_DIR/fm-reclaim-build-scratch.sh" "$WT" >&2 || true
+  fi
 fi
 
 # Fix 3 (see script header): sweep remote job workers abandoned by an already

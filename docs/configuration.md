@@ -117,6 +117,19 @@ An absent file means `auto`, i.e. default-on on macOS: the alarm exists precisel
 A missing or failing channel logs and falls through to the next, never crashing the daemon.
 See [`wedge-alarm.md`](wedge-alarm.md) for the current channel reference, [`verification/supervision.md`](verification/supervision.md#wedge-alarm-channels) for active evidence, and [`examples/wedge-alarm`](examples/wedge-alarm) for a copyable config.
 
+## Disk-space guard (config/disk-guard)
+
+Pooled build worktrees and their install trees share one filesystem, and a fill fails the next build or deploy with an error that names anything but the disk.
+`bin/fm-guard.sh` therefore alarms whenever the watched filesystem's free space is below the configured headroom, on every fleet action that already runs the watcher and tangle guards.
+The alarm warns only: it never deletes a cache and never pauses a spawn.
+It is rate-limited to once per `FM_DISK_GUARD_REPEAT_SECS` (default 3600) per home, and re-arms as soon as free space recovers.
+
+`config/disk-guard` (local, gitignored) holds one non-empty, non-comment line: `<min-free-gib> [<path>]`.
+An absent file means 20 GiB of headroom on `/`; a threshold of `0` disables the alarm; an unusable threshold is reported and falls back to the default rather than disabling the check silently.
+A watched path whose free space cannot be read alarms as well, so a mistyped mount point is visible rather than quietly unmonitored.
+
+Reclaiming that space when a task finishes is a separate, independent safeguard: `bin/fm-teardown.sh` calls `bin/fm-reclaim-build-scratch.sh` once a torn-down task's landed-work checks have passed, and that script's header owns which paths it will and will not remove.
+
 ## Trace context propagation (config/trace-context / FM_TRACE_CONTEXT)
 
 The optional local, gitignored `config/trace-context` presence flag enables default-off native W3C trace-context propagation.
@@ -545,6 +558,7 @@ FM_STARTUP_NETWORK_TIMEOUT=120   # seconds bounding the whole deferred network s
 FM_TASKS_AXI_COMPATIBLE=   # internal one-hop handoff of an already-computed tasks-axi compatibility verdict (0 or 1); consumed when bin/fm-tasks-axi-lib.sh is sourced
 FM_GUARD_READ_ONLY=0    # internal/read-only guard mode: keep alarms but suppress drain, supervision repair, and checkout repair commands
 FM_GUARD_CONTINUE_LINE='This is a supervision warning only; the guarded operation WILL still run.'   # banner continuation line; fm-send.sh overrides it to name the requested message specifically
+FM_DISK_GUARD_REPEAT_SECS=3600   # seconds between repeats of the low-disk alarm in one home; see "Disk-space guard"
 FM_POLL=15              # seconds between watcher poll cycles
 FM_HEARTBEAT=600        # base seconds between heartbeat scans; no-change heartbeats are absorbed while idle
 FM_HEARTBEAT_MAX=7200   # heartbeat backoff cap

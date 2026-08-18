@@ -2591,6 +2591,65 @@ EOF
   pass "the run abort and the leaked-process reap both complete before the destructive worktree return"
 }
 
+# Give the worktree a committed .gitignore plus one ignored install tree and one
+# ignored build-output tree, the shape a finished frontend task leaves behind.
+add_build_scratch() {
+  local case_dir=$1
+  printf '%s\n%s\n' 'node_modules/' 'dist/' > "$case_dir/wt/.gitignore"
+  git -C "$case_dir/wt" add -- .gitignore
+  git -C "$case_dir/wt" -c user.email=t@t -c user.name=t commit -q -m "ignore build scratch"
+  mkdir -p "$case_dir/wt/node_modules/pkg" "$case_dir/wt/dist"
+  printf 'installed\n' > "$case_dir/wt/node_modules/pkg/index.js"
+  printf 'built\n' > "$case_dir/wt/dist/bundle.js"
+}
+
+test_landed_teardown_reclaims_build_scratch_before_the_worktree_returns() {
+  local case_dir rc
+  case_dir=$(make_case reclaim-landed)
+  write_meta "$case_dir" no-mistakes ship
+  add_build_scratch "$case_dir"
+  land_shippable_commit "$case_dir"
+
+  # Snapshot, at the moment of the destructive return, whether the scratch was
+  # already gone: the pool slot must not go back carrying the install tree.
+  cat > "$case_dir/fakebin/treehouse" <<EOF
+#!/usr/bin/env bash
+if [ ! -e "$case_dir/wt/node_modules" ]; then echo "reclaim-already-happened" >> "$case_dir/order.log"; fi
+exit 0
+EOF
+  chmod +x "$case_dir/fakebin/treehouse"
+
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "reclaim-landed: teardown should succeed for landed work"
+  assert_grep "reclaim-already-happened" "$case_dir/order.log" \
+    "reclaim-landed: build scratch was still present when the worktree was returned"
+  assert_absent "$case_dir/wt/dist" "reclaim-landed: ignored build output should have been reclaimed"
+  assert_present "$case_dir/wt/.gitignore" "reclaim-landed: tracked files must survive reclamation"
+  pass "teardown of landed work reclaims the worktree's build scratch before returning it"
+}
+
+test_refused_teardown_leaves_build_scratch_untouched() {
+  local case_dir rc
+  case_dir=$(make_case reclaim-refused)
+  write_meta "$case_dir" no-mistakes ship
+  add_build_scratch "$case_dir"
+  # Committed but on no remote and in no merged PR: teardown must refuse, and
+  # nothing - scratch included - may be touched in a worktree that still holds
+  # unlanded work.
+  wt_commit "$case_dir" "unlanded work"
+
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 1 "$rc" "reclaim-refused: teardown should refuse unlanded work"
+  grep -q REFUSED "$case_dir/stderr" || fail "reclaim-refused: no REFUSED line in stderr"
+  assert_present "$case_dir/wt/node_modules/pkg/index.js" \
+    "reclaim-refused: a refused teardown must not reclaim anything"
+  assert_present "$case_dir/wt/dist/bundle.js" \
+    "reclaim-refused: a refused teardown must not remove build output either"
+  pass "a teardown refused for unlanded work never reclaims that worktree's build scratch"
+}
+
 test_local_only_fork_remote_allows
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
@@ -2649,3 +2708,5 @@ test_process_spawned_during_grace_is_reaped_on_later_pass
 test_persistent_scan_refuses_after_bounded_retries
 test_process_exit_during_identity_lookup_does_not_refuse
 test_run_abort_precedes_process_reap_precedes_worktree_removal
+test_landed_teardown_reclaims_build_scratch_before_the_worktree_returns
+test_refused_teardown_leaves_build_scratch_untouched
