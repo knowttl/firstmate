@@ -25,7 +25,7 @@ Firstmate registers a source, keeps working, and is woken when that process comp
 ## Arming a source
 
 Use the adapter, not the generic runner, for a real source.
-For an Atelier review artifact:
+For an Atelier review artifact firstmate owns (a live investigating scout should host its own loop):
 
 ```sh
 bin/fm-procevent-atelier.sh arm <artifact.html>
