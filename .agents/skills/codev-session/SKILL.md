@@ -92,4 +92,4 @@ Read the report and relay its findings to the captain, not merely that it finish
 - **Board teardown waits for the captain's word.**
   The review board and any host-side forwarder stay up while the captain is still browsing; tear the session down only on the captain's explicit go-ahead, and end the board session cleanly then.
 - **Completion gate applies.**
-  Before treating the session as complete, load `decision-hold-lifecycle` and register any unresolved captain decision it exposed - including the "implement for real" decision - so nothing the session surfaced is lost at teardown.
+  Before treating the session as complete, load `captain-hold-lifecycle` and register any unresolved captain decision it exposed - including the "implement for real" decision - so nothing the session surfaced is lost at teardown.
