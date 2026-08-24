@@ -180,7 +180,7 @@ family_for_basename() {
     fm-send-secondmate-marker.test.sh|fm-shared-captain-inheritance.test.sh)
       printf '%s\n' secondmate
       ;;
-    fm-bootstrap.test.sh|fm-fleet-sync.test.sh|fm-gate-refuse.test.sh|fm-gotmp.test.sh|\
+    fm-bootstrap.test.sh|fm-bootstrap-network-parallel.test.sh|fm-fleet-sync.test.sh|fm-gate-refuse.test.sh|fm-gotmp.test.sh|\
     fm-session-start.test.sh|fm-sessionstart-nudge.test.sh|fm-startup-network.test.sh|\
     fm-tangle-guard.test.sh|fm-update.test.sh)
       printf '%s\n' session-bootstrap
@@ -193,7 +193,8 @@ family_for_basename() {
     fm-grok-stop-live-e2e.test.sh|fm-harness-liveness-drift-live-e2e.test.sh|\
     fm-muse-signals-live-e2e.test.sh|\
     fm-herdr-version-floor-live-e2e.test.sh|\
-    fm-opencode-primary-live-e2e.test.sh|fm-pi-primary-live-e2e.test.sh|\
+    fm-opencode-primary-live-e2e.test.sh|fm-pi-branch-live-e2e.test.sh|\
+    fm-pi-primary-live-e2e.test.sh|\
     fm-sessionstart-hook-live-e2e.test.sh|fm-sessionstart-instruction-refresh-live-e2e.test.sh|\
     fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh|\
     fm-send-inbox-doorbell-live-e2e.test.sh|\
@@ -398,6 +399,7 @@ tests/fm-backend.test.sh 17169
 tests/fm-backlog-handoff.test.sh 4157
 tests/fm-bearings-board.test.sh 3385
 tests/fm-bearings-snapshot.test.sh 68659
+tests/fm-bootstrap-network-parallel.test.sh 8000
 tests/fm-bootstrap.test.sh 38417
 tests/fm-busy-adapter-wiring.test.sh 14880
 tests/fm-busy-state.test.sh 714
