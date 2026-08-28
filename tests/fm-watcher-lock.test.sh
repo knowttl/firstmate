@@ -930,7 +930,7 @@ SH
 }
 
 test_stopped_watcher_is_live_but_stale_then_exit_is_classified() {
-  local dir state fakebin armout armpid watcher_pid i status
+  local dir state fakebin armout armpid watcher_pid i status token recovery_armout recovery_armpid
   dir=$(make_case stopped-watcher)
   state="$dir/state"
   fakebin="$dir/fakebin"
@@ -962,7 +962,30 @@ test_stopped_watcher_is_live_but_stale_then_exit_is_classified() {
   [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "terminated stopped-watcher cycle did not surface nonzero (status $status)"
   grep -Eq 'reason=(nonzero-exit|signal-exit)' "$state/.watch-cycle-exits.log" \
     || fail "terminated watcher exit was not classified in the lifecycle ledger"
-  pass "SIGSTOP distinguishes live PID from stale beacon and termination records the exit class"
+  [ ! -s "$state/.wake-queue" ] || fail "stopped watcher unexpectedly left a queued wake before recovery"
+  [ -f "$state/.watcher-down" ] && [ ! -L "$state/.watcher-down" ] \
+    || fail "stale watcher close did not publish a regular recovery marker"
+  token=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_recovery_marker_read "$2" || exit 1
+    printf "%s\n" "$FM_RECOVERY_MARKER_TOKEN"
+  ' _ "$LIB" "$state/.watcher-down") \
+    || fail "stale watcher close published unreadable recovery evidence"
+  case "$token" in
+    pending:downtime:*|announced:downtime:*) ;;
+    *) fail "stale watcher close published invalid recovery evidence: $token" ;;
+  esac
+
+  recovery_armout="$dir/recovery-arm.out"
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" > "$recovery_armout" &
+  recovery_armpid=$!
+  wait_for_exit "$recovery_armpid" 80
+  status=$?
+  [ "$status" -ne 124 ] || fail "next arm did not recover the stale watcher episode"
+  grep -F 'check: rearm-resurface' "$recovery_armout" >/dev/null \
+    || fail "next arm did not resurface the stale watcher episode: $(cat "$recovery_armout")"
+  drain_and_ack "$state" || fail "stale watcher recovery acknowledgement failed"
+  pass "SIGSTOP stale-beacon close publishes and resurfaces a recovery episode"
 }
 
 test_pid_identity_is_locale_invariant() {
