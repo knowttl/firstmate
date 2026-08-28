@@ -1135,6 +1135,18 @@ if [ "${FM_WATCH_HANDLING_SUCCESSOR:-0}" = 1 ]; then
 elif [ "$FM_RECOVERY_MARKER_ACTION" = recover ]; then
   WATCHER_RECOVERY_PENDING=1
 fi
+# A recovery episode exists to carry work across the gap between this close and
+# the next arm: durable wakes the next arm must re-present, and open captain
+# decisions a down stretch could otherwise bury. With neither, an episode has
+# nothing to recover, and minting one would demand an acknowledgement turn for an
+# empty queue and re-announce a provably healthy home on every ordinary one-shot
+# close. docs/watcher-continuity.md owns the contract.
+close_leaves_work_to_resurface() {
+  [ ! -s "$FM_WAKE_QUEUE" ] || return 0
+  [ -z "$(scan_open_decisions_incremental "$STATE")" ] || return 0
+  return 1
+}
+
 watcher_cleanup() {
   local cleanup_status=0 owns_lock=0 transition=release-lock
   if [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" = "${WATCHER_PID:-}" ]; then
@@ -1142,6 +1154,8 @@ watcher_cleanup() {
     if [ "${WATCHER_RECOVERY_PENDING:-0}" -eq 1 ] \
       && [ "${FM_WATCH_DELIVERED_REASON:-}" = "check: rearm-resurface" ]; then
       transition=release-lock-existing
+    elif ! close_leaves_work_to_resurface; then
+      transition=release-lock-idle
     fi
   fi
   fm_active_check_stop || cleanup_status=1

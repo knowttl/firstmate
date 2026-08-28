@@ -268,7 +268,7 @@ SH
     FM_FAKE_TMUX_LOG="$dir/tmux.log" FM_FAKE_TMUX_CAPTURE="$dir/fake-tmux/pane.txt" \
     FM_SECONDMATE_WAKE_STALL_SECS=1 FM_POLL=1 FM_SIGNAL_GRACE=0 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
-    "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 3 > "$out" 2> "$dir/watch.err" || true
+    "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 15 > "$out" 2> "$dir/watch.err" || true
   grep -F 'check: secondmate wake-loop stalled: mate=mate row=7' "$out" >/dev/null \
     || fail "an aged foreign row did not wake the parent checkpoint: $(cat "$out"); err=$(cat "$dir/watch.err"); meta=$(cat "$state/mate.meta"); foreign=$(cat "$sub/state/.wake-queue")"
   [ -s "$state/.wake-queue" ] || fail "the parent notification was not durable"

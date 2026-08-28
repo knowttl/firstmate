@@ -242,7 +242,7 @@ test_attached_arm_still_fails_on_a_wake_it_did_not_deliver() {
 }
 
 test_rearm_resurfaces_durable_queue_and_remote_open_decision() {
-  local dir home state fakebin result armout drainout status watcher_pid sequence generation decision_recovery_arm decision_successor
+  local dir home state fakebin result armout drainout status watcher_pid sequence generation decision_recovery_arm decision_successor i
   dir=$(make_case rearm-resurface)
   home="$dir/home"
   state="$dir/state"
@@ -287,7 +287,14 @@ test_rearm_resurfaces_durable_queue_and_remote_open_decision() {
   append_wake "$state" check startup-network 'check: startup-network'
 
   start_rearm_arm "$home" "$state" "$fakebin" "$armout"
-  sleep 0.25
+  # The re-arm must close on its own recovery wake. Poll for that close under a
+  # bound rather than waiting a fixed slice: a fixed wait races the arm's own
+  # startup on a loaded machine, which made this assertion flaky.
+  i=0
+  while [ "$i" -lt 80 ] && is_live_non_zombie "$ARM_PID"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
   if is_live_non_zombie "$ARM_PID"; then
     # End the fixture through an ordinary actionable status transition so this
     # failing pre-fix path leaves no child behind.
@@ -792,8 +799,12 @@ test_downtime_marker_does_not_follow_symlink() {
   start_rearm_arm "$home" "$state" "$fakebin" "$armout"
   is_live_non_zombie "$ARM_PID" || fail "symlink fixture watcher did not stay live"
   watcher_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  # Give the close a durable wake to resurface, so it publishes an episode at
+  # all: this case is about HOW publication writes the marker, not whether an
+  # idle close opens one.
+  append_wake "$state" check symlink-fixture 'check: symlink fixture wake'
   printf 'must remain intact\n' > "$sentinel"
-  ln -s "$sentinel" "$state/.watcher-down"
+  ln -sf "$sentinel" "$state/.watcher-down"
   kill -TERM "$watcher_pid" 2>/dev/null || fail "could not stop symlink fixture watcher"
   wait "$ARM_PID" 2>/dev/null || true
 

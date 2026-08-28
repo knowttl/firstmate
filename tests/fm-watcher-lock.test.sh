@@ -36,6 +36,10 @@ drain_and_ack() {  # <state>
   sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$err")
   generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err")
   rm -f "$err"
+  # A close that left nothing queued opens no recovery episode, so the drain
+  # demands no acknowledgement: the caller's goal (carry nothing durable into
+  # the next arm) is already met.
+  [ -n "$sequence" ] || [ -n "$generation" ] || return 0
   [ -n "$sequence" ] && [ -n "$generation" ] || return 1
   FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" \
     --recovery-generation "$generation"
