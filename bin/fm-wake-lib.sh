@@ -519,11 +519,12 @@ _fm_recovery_marker_write_locked() {
 # already-announced generation announced so it cannot be re-presented until a
 # new down stretch mints a new generation.
 # A third argument of "reuse-only" restricts a downtime publication to reusing an
-# episode that is already open: with none to reuse the marker is left untouched
-# instead of minting a fresh generation.
+# episode that is already open only while its fourth-argument predicate still
+# proves skipping safe inside the marker-lock critical section.
 # docs/watcher-continuity.md owns the recovery contract and sequence-safety rationale.
 _fm_recovery_marker_publish() {
-  local marker=$1 kind=${2:-downtime} reuse=${3:-} lock saved_token generation='' status=pending
+  local marker=$1 kind=${2:-downtime} reuse=${3:-} health_predicate=${4:-}
+  local lock saved_token generation='' status=pending
   case "$kind" in handling|downtime) ;; *) return 1 ;; esac
   case "$reuse" in ''|reuse-only) ;; *) return 1 ;; esac
   lock="${marker}.lock"
@@ -550,9 +551,10 @@ _fm_recovery_marker_publish() {
       esac
     fi
     FM_RECOVERY_MARKER_TOKEN=$saved_token
-    if [ -z "$generation" ] && [ "$reuse" = reuse-only ]; then
-      fm_lock_release "$lock"
-      return 0
+    if [ -z "$generation" ] && [ "$reuse" = reuse-only ] \
+      && [ -n "$health_predicate" ] && "$health_predicate"; then
+        fm_lock_release "$lock"
+        return 0
     fi
   fi
   if ! _fm_recovery_marker_write_locked "$marker" "$kind" "$generation" "$status"; then
@@ -731,7 +733,7 @@ _fm_recovery_marker_reopen_announced() {
 }
 
 fm_recovery_transition() {
-  local marker=$1 action=$2 target=${3:-} value=${4:-}
+  local marker=$1 action=$2 target=${3:-} value=${4:-} health_predicate=${5:-}
   case "$action" in
     publish)
       _fm_recovery_marker_publish "$marker" "${target:-downtime}"
@@ -752,9 +754,10 @@ fm_recovery_transition() {
       ;;
     release-lock-idle)
       # A close with nothing to resurface: keep an already-open episode's
-      # generation usable, but never open a new one for an empty recovery.
+      # generation usable, and skip a new episode only on current health proof.
       [ -n "$target" ] || return 1
-      _fm_recovery_marker_publish "$marker" "${value:-downtime}" reuse-only || return 1
+      _fm_recovery_marker_publish "$marker" "${value:-downtime}" reuse-only "$health_predicate" \
+        || return 1
       fm_lock_release "$target"
       ;;
     release-lock-existing)

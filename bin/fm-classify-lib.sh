@@ -654,11 +654,18 @@ _fm_status_read_span() {  # <status-file> <start-offset> <byte-length>
   ' "$f" "$start" "$length"
 }
 
-status_open_decisions_incremental() {  # <status-file> [<captured-end-offset>]
+_fm_open_decisions_indeterminate() {  # <mode> <trusted-open-set>
+  [ "$1" != strict ] || return 1
+  printf '%s' "$2"
+}
+
+status_open_decisions_incremental() {  # <status-file> [<captured-end-offset>] [strict]
   local f=$1 captured_end=${2:-} cf offset ident open='' trusted_open='' cursor_data first rest offset_line ident_line
   local version='' size actual_size cur_ident resolve held chunk_file chunk_size line cursor_dirty=0
-  local target_cursor
-  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
+  local target_cursor mode=${3:-lenient}
+  case "$mode" in lenient|strict) ;; *) return 1 ;; esac
+  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] \
+    || { _fm_open_decisions_indeterminate "$mode" ''; return $?; }
   cf=$(_fm_open_decisions_cursor_path "$f")
   offset=0
   ident=''
@@ -706,17 +713,22 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset>]
   # A stat/size-read failure is a genuine I/O error, not "the file is empty" -
   # report the already-trusted persisted set unchanged rather than risking a
   # silent invalidation that would wipe it.
-  cur_ident=$(_fm_open_decisions_file_ident "$f") || { printf '%s' "$trusted_open"; return 0; }
-  [ -n "$cur_ident" ] || { printf '%s' "$trusted_open"; return 0; }
+  cur_ident=$(_fm_open_decisions_file_ident "$f") \
+    || { _fm_open_decisions_indeterminate "$mode" "$trusted_open"; return $?; }
+  [ -n "$cur_ident" ] \
+    || { _fm_open_decisions_indeterminate "$mode" "$trusted_open"; return $?; }
   actual_size=$(_fm_status_file_size "$f") \
-    || { printf '%s' "$trusted_open"; return 0; }
+    || { _fm_open_decisions_indeterminate "$mode" "$trusted_open"; return $?; }
   actual_size=${actual_size//[[:space:]]/}
-  case "$actual_size" in ''|*[!0-9]*) printf '%s' "$trusted_open"; return 0 ;; esac
+  case "$actual_size" in
+    ''|*[!0-9]*) _fm_open_decisions_indeterminate "$mode" "$trusted_open"; return $? ;;
+  esac
   if [ -n "$captured_end" ]; then
     case "$captured_end" in
-      ''|*[!0-9]*) printf '%s' "$trusted_open"; return 0 ;;
+      ''|*[!0-9]*) _fm_open_decisions_indeterminate "$mode" "$trusted_open"; return $? ;;
     esac
-    [ "$captured_end" -le "$actual_size" ] || { printf '%s' "$trusted_open"; return 0; }
+    [ "$captured_end" -le "$actual_size" ] \
+      || { _fm_open_decisions_indeterminate "$mode" "$trusted_open"; return $?; }
     size=$captured_end
   else
     size=$actual_size
@@ -732,12 +744,16 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset>]
   if [ "$offset" -lt "$size" ]; then
     chunk_file="$cf.read.$$"
     _fm_status_read_span "$f" "$offset" "$((size - offset))" > "$chunk_file" 2>/dev/null \
-      || { rm -f "$chunk_file"; printf '%s' "$trusted_open"; return 0; }
+      || { rm -f "$chunk_file"; _fm_open_decisions_indeterminate "$mode" "$trusted_open"; return $?; }
     chunk_size=$(LC_ALL=C wc -c < "$chunk_file" 2>/dev/null) \
-      || { rm -f "$chunk_file"; printf '%s' "$trusted_open"; return 0; }
+      || { rm -f "$chunk_file"; _fm_open_decisions_indeterminate "$mode" "$trusted_open"; return $?; }
     chunk_size=${chunk_size//[[:space:]]/}
     case "$chunk_size" in
-      ''|*[!0-9]*) rm -f "$chunk_file"; printf '%s' "$trusted_open"; return 0 ;;
+      ''|*[!0-9]*)
+        rm -f "$chunk_file"
+        _fm_open_decisions_indeterminate "$mode" "$trusted_open"
+        return $?
+        ;;
     esac
     # Test-only observability seam (off by default, no production behavior
     # change): when set, records exactly how many bytes THIS call folded, so a
@@ -787,6 +803,25 @@ $open
 EOF
   done
   return 0
+}
+
+scan_open_decisions_incremental_strict() {  # <state>
+  local state=$1 f task open line
+  for f in "$state"/*.status; do
+    if [ ! -e "$f" ]; then
+      [ ! -L "$f" ] || return 1
+      continue
+    fi
+    task=$(basename "$f"); task="${task%.status}"
+    open=$(status_open_decisions_incremental "$f" '' strict) || return 1
+    [ -n "$open" ] || continue
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      printf '%s\t%s\n' "$task" "$line" || return 1
+    done <<EOF
+$open
+EOF
+  done
 }
 
 status_presentation_snapshot() {  # <state>
