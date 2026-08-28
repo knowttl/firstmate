@@ -520,7 +520,7 @@ _fm_recovery_marker_write_locked() {
 # new down stretch mints a new generation.
 # A third argument of "reuse-only" restricts a downtime publication to reusing an
 # episode that is already open only while its fourth-argument predicate still
-# proves skipping safe inside the marker-lock critical section.
+# proves the complete skip eligibility inside the marker-lock critical section.
 # docs/watcher-continuity.md owns the recovery contract and sequence-safety rationale.
 _fm_recovery_marker_publish() {
   local marker=$1 kind=${2:-downtime} reuse=${3:-} health_predicate=${4:-}
@@ -754,7 +754,7 @@ fm_recovery_transition() {
       ;;
     release-lock-idle)
       # A close with nothing to resurface: keep an already-open episode's
-      # generation usable, and skip a new episode only on current health proof.
+      # generation usable, and skip a new episode only on current eligibility proof.
       [ -n "$target" ] || return 1
       _fm_recovery_marker_publish "$marker" "${value:-downtime}" reuse-only "$health_predicate" \
         || return 1

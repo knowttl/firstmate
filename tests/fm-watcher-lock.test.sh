@@ -1198,6 +1198,100 @@ test_watcher_beacon_stales_waiting_for_marker_lock_publishes_recovery() {
   pass "watcher whose beacon stales behind marker lock publishes recovery"
 }
 
+test_watcher_decision_opened_waiting_for_marker_lock_publishes_recovery() {
+  local dir state fakebin out holder_ready wait_ready watcher_pid holder_pid i status token real_sleep
+  dir=$(make_case decision-opens-waiting-for-marker-lock)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  holder_ready="$dir/holder.ready"
+  wait_ready="$dir/wait.ready"
+  real_sleep=$(command -v sleep)
+  mark_pr_check_migration_complete "$state"
+  cat > "$fakebin/sleep" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = 0.1 ]; then
+  printf 'ready\n' > "$FM_TEST_MARKER_WAIT_READY"
+fi
+exec "$FM_TEST_REAL_SLEEP" "$@"
+SH
+  chmod 0700 "$fakebin/sleep"
+  PATH="$fakebin:$PATH" FM_TEST_MARKER_WAIT_READY="$wait_ready" \
+    FM_TEST_REAL_SLEEP="$real_sleep" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" \
+    FM_GUARD_GRACE=300 FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 \
+    FM_HEARTBEAT=999999 "$WATCH" > "$out" 2>&1 &
+  watcher_pid=$!
+  i=0
+  while [ "$i" -lt 80 ]; do
+    [ -e "$state/.last-watcher-beat" ] \
+      && [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$watcher_pid" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$state/.last-watcher-beat" ] || fail "decision-race watcher did not publish its first beacon"
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$watcher_pid" ] \
+    || fail "decision-race watcher did not own the singleton lock"
+
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2" || exit 1
+    printf "ready\n" > "$3"
+    kill -STOP "${BASHPID:-$$}"
+    fm_lock_release "$2"
+  ' _ "$LIB" "$state/.watcher-down.lock" "$holder_ready" &
+  holder_pid=$!
+  i=0
+  while [ "$i" -lt 80 ] && [ ! -s "$holder_ready" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if [ ! -s "$holder_ready" ]; then
+    kill -CONT "$holder_pid" 2>/dev/null || true
+    kill -TERM "$holder_pid" 2>/dev/null || true
+    fail "decision-race marker-lock holder did not acquire the recovery lock"
+  fi
+
+  touch "$state/.last-watcher-beat"
+  if ! kill -TERM "$watcher_pid" 2>/dev/null; then
+    kill -CONT "$holder_pid" 2>/dev/null || true
+    kill -TERM "$holder_pid" 2>/dev/null || true
+    fail "could not terminate decision-race watcher"
+  fi
+  i=0
+  while [ "$i" -lt 80 ] && [ ! -s "$wait_ready" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if [ ! -s "$wait_ready" ]; then
+    kill -CONT "$holder_pid" 2>/dev/null || true
+    kill -TERM "$holder_pid" 2>/dev/null || true
+    fail "decision-race watcher did not block on the recovery lock"
+  fi
+
+  printf 'needs-decision [key=late]: choose during close\n' >> "$state/task.status"
+  kill -CONT "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || fail "decision-race marker-lock holder did not release cleanly"
+  wait_for_exit "$watcher_pid" 80
+  status=$?
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] \
+    || fail "decision-race watcher termination did not exit nonzero (status $status)"
+  [ ! -s "$state/.wake-queue" ] || fail "decision-race watcher unexpectedly left a queued wake"
+  [ -f "$state/.watcher-down" ] && [ ! -L "$state/.watcher-down" ] \
+    || fail "watcher missing a decision opened behind the marker lock did not publish recovery"
+  token=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_recovery_marker_read "$2" || exit 1
+    printf "%s\n" "$FM_RECOVERY_MARKER_TOKEN"
+  ' _ "$LIB" "$state/.watcher-down") \
+    || fail "decision-race watcher published unreadable recovery evidence"
+  case "$token" in
+    pending:downtime:*|announced:downtime:*) ;;
+    *) fail "decision-race watcher published invalid recovery evidence: $token" ;;
+  esac
+  pass "watcher sees decisions opened while waiting for marker lock"
+}
+
 test_watcher_unclassifiable_status_publishes_recovery() {
   local dir state fakebin out reader reader_called watcher_pid i status token
   dir=$(make_case unclassifiable-status)
@@ -1444,4 +1538,5 @@ test_stopped_watcher_is_live_but_stale_then_exit_is_classified
 test_watcher_stopped_before_first_beat_publishes_recovery
 test_watcher_beacon_stales_during_cleanup_publishes_recovery
 test_watcher_beacon_stales_waiting_for_marker_lock_publishes_recovery
+test_watcher_decision_opened_waiting_for_marker_lock_publishes_recovery
 test_watcher_unclassifiable_status_publishes_recovery

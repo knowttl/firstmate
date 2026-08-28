@@ -1141,16 +1141,11 @@ fi
 # fresh beat, an episode has nothing to recover, and minting one would demand an
 # acknowledgement turn for an empty queue and re-announce a provably healthy home
 # on every ordinary one-shot close. docs/watcher-continuity.md owns the contract.
-close_leaves_work_to_resurface() {
-  local open_decisions
-  [ ! -s "$FM_WAKE_QUEUE" ] || return 0
-  open_decisions=$(scan_open_decisions_incremental_strict "$STATE") || return 0
-  [ -z "$open_decisions" ] || return 0
-  return 1
-}
-
-watcher_idle_health_proven() {
-  local beat_age
+watcher_idle_eligibility_proven() {
+  local beat_age open_decisions
+  [ ! -s "$FM_WAKE_QUEUE" ] || return 1
+  open_decisions=$(scan_open_decisions_incremental_strict "$STATE") || return 1
+  [ -z "$open_decisions" ] || return 1
   [ "${WATCHER_BEAT_PROVEN:-0}" = 1 ] || return 1
   beat_age=$(fm_path_age "$STATE/.last-watcher-beat") || return 1
   case "$beat_age" in ''|*[!0-9]*) return 1 ;; esac
@@ -1165,18 +1160,16 @@ watcher_cleanup() {
     if [ "${WATCHER_RECOVERY_PENDING:-0}" -eq 1 ] \
       && [ "${FM_WATCH_DELIVERED_REASON:-}" = "check: rearm-resurface" ]; then
       transition=release-lock-existing
+    else
+      transition=release-lock-idle
     fi
   fi
   fm_active_check_stop || cleanup_status=1
   fm_check_output_cleanup
   fm_custom_check_snapshot_cleanup
-  if [ "$owns_lock" -eq 1 ] && [ "$transition" != release-lock-existing ] \
-    && ! close_leaves_work_to_resurface; then
-    transition=release-lock-idle
-  fi
   if [ "$owns_lock" -eq 1 ] \
     && ! fm_recovery_transition "$WATCHER_DOWNTIME_MARKER" "$transition" "$WATCH_LOCK" downtime \
-      watcher_idle_health_proven; then
+      watcher_idle_eligibility_proven; then
     echo "watcher: recovery state could not be persisted; retaining stale lock evidence" >&2
     cleanup_status=1
   fi
