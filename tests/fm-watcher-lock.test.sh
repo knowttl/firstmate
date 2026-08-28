@@ -29,17 +29,21 @@ mark_pr_check_migration_complete() {
   chmod 0600 "$state/.pr-check-migration-scan-v1" "$state/.pr-check-migration-v1"
 }
 
-drain_and_ack() {  # <state>
-  local state=$1 err sequence generation
+drain_and_ack() {  # <state> [allow-no-ack]
+  local state=$1 allow_no_ack=${2:-0} err sequence generation
   err="$state/.test-drain.err"
   FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2> "$err" || return 1
   sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$err")
   generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err")
   rm -f "$err"
-  # A close that left nothing queued opens no recovery episode, so the drain
-  # demands no acknowledgement: the caller's goal (carry nothing durable into
-  # the next arm) is already met.
-  [ -n "$sequence" ] || [ -n "$generation" ] || return 0
+  if [ -z "$sequence" ] && [ -z "$generation" ]; then
+    # No acknowledgement was demanded. Only callers deliberately exercising an
+    # intentional idle close (no episode expected) accept that; every other
+    # caller must still observe WAKE_ACK_REQUIRED, so a genuine drain regression
+    # that dropped the acknowledgement is not masked.
+    [ "$allow_no_ack" = 1 ] && return 0
+    return 1
+  fi
   [ -n "$sequence" ] && [ -n "$generation" ] || return 1
   FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" \
     --recovery-generation "$generation"
@@ -896,11 +900,10 @@ SH
     || fail "predecessor ledger record was not linked to its verified successor"
   kill -HUP "$successor_arm" 2>/dev/null || true
   wait "$successor_arm" 2>/dev/null || true
-  # The forced interruption is a watcher-down interval. Consume the prior
-  # delivered wake before beginning independent ledger cycles, just as the
-  # recovery handling turn does, so this fixture does not intentionally carry a
-  # durable wake into the next arm.
-  drain_and_ack "$state" || fail "recovery drain after forced arm interruption failed"
+  # The arm's clean HUP child-stop leaves a healthy watcher with an empty queue
+  # and no open decision, so its idle close opens no recovery episode. Drain in
+  # allow-no-ack mode to confirm nothing durable is carried into the next arm.
+  drain_and_ack "$state" 1 || fail "idle drain after forced arm interruption failed"
 
   # Produce enough short cycles to cross a deliberately small cap. The cap is
   # applied by the arm layer itself and keeps only complete ledger records.
@@ -918,8 +921,8 @@ SH
     grep -qF 'watcher: started pid=' "$armout" || fail "bounded ledger cycle $iteration did not start"
     kill -HUP "$successor_arm" 2>/dev/null || true
     wait "$successor_arm" 2>/dev/null || true
-    drain_and_ack "$state" \
-      || fail "recovery drain after bounded ledger cycle $iteration failed"
+    drain_and_ack "$state" 1 \
+      || fail "idle drain after bounded ledger cycle $iteration failed"
     iteration=$((iteration + 1))
   done
   size=$(wc -c < "$state/.watch-cycle-exits.log" | tr -d '[:space:]')

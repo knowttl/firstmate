@@ -1144,6 +1144,13 @@ fi
 watcher_idle_eligibility_proven() {
   local beat_age open_decisions
   [ ! -s "$FM_WAKE_QUEUE" ] || return 1
+  # Accepted residual: a needs-decision line appended by a crewmate's unlocked
+  # `>> task.status` while this strict scan is folding can be missed by this
+  # close, so it may skip publication despite a just-opened decision. The
+  # consequence is bounded to a one-cycle delay, not a lost decision: the append
+  # changes the status file's signature so the next watcher's ordinary signal
+  # scan wakes on it, and every drain prints its OPEN DECISIONS section from its
+  # own independent fold regardless of the recovery marker.
   open_decisions=$(scan_open_decisions_incremental_strict "$STATE") || return 1
   [ -z "$open_decisions" ] || return 1
   [ "${WATCHER_BEAT_PROVEN:-0}" = 1 ] || return 1

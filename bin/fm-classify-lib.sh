@@ -807,6 +807,12 @@ EOF
 
 scan_open_decisions_incremental_strict() {  # <state>
   local state=$1 f task open line
+  # Strict completeness: an unmatched glob is ambiguous between a genuinely
+  # empty directory and one the shell could not enumerate, so prove the state
+  # is a readable, searchable directory before an empty result can be trusted.
+  # If that cannot be proven the scan is indeterminate and must fail toward
+  # publishing rather than reporting "no open decisions".
+  [ -d "$state" ] && [ -r "$state" ] && [ -x "$state" ] || return 1
   for f in "$state"/*.status; do
     if [ ! -e "$f" ]; then
       [ ! -L "$f" ] || return 1
