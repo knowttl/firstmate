@@ -1,0 +1,10 @@
+=== B. REPRODUCTION on unfixed base bin/ (fixed regression tests) ===
+Swapping ONLY bin/fm-watch.sh, bin/fm-wake-lib.sh, bin/fm-classify-lib.sh to base 3e8e8dbbb154d84a833d95179afcc980a99b8937,
+keeping the new colocated regression test. This reproduces the reported symptom.
+
+not ok - a healthy home demanded 3 acknowledgement turns with nothing queued
+
+-> On unfixed code the healthy home demands 3 acknowledgement turns with nothing queued
+   (matches the diagnosed 'every turn re-announces supervision down / outcome=rewake' loop).
+   After the fix (section A) the same case demands 0 and leaves no .watcher-down.
+worktree restored clean:

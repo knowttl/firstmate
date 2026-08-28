@@ -1,0 +1,21 @@
+=== firstmate watcher-down non-converging-clear: end-to-end evidence ===
+branch: fm/fm-watcher-down-clear   target: cad74c9   base: 3e8e8db
+
+--- A. FIXED code: healthy home converges, down-close still recovers (real fm-watch.sh + fm-wake-drain.sh) ---
+T3_ACK_DEMANDS=0
+ok - a healthy home with nothing to resurface converges instead of re-announcing
+T4_MARKER=announced:downtime:2912561.1787944872.FsGNvX
+ok - a close that leaves work behind still opens and recovers its episode
+T2_WATCH_OUTPUT=signal: /tmp/fm-watch-recovery-loop.3wg5Mk/recovery-gap-successor/state/crew.status 
+T2_QUEUE_ROW=1787944874	2	signal	crew.status	signal: /tmp/fm-watch-recovery-loop.3wg5Mk/recovery-gap-successor/state/crew.status
+ok - a resurfacing handling successor stays alive and supervises instead of going blind
+T1_MESSAGES=1
+T1_LOCK_PID=2914422
+T1_MARKER=announced:downtime:seed.1.aaa
+ok - unacknowledged recovery is announced at most once per generation and the successor stays alive
+recovery-loop suite exit=0
+
+Key signals above:
+  T3_ACK_DEMANDS=0            -> 3 consecutive healthy closes, ZERO acknowledgement turns demanded, no state/.watcher-down left
+  T4_MARKER=announced:downtime:... -> a close leaving queued work / open decision STILL opens+recovers its episode
+  T2 supervises live crew event; T1 announces an unacked recovery at most once per generation
