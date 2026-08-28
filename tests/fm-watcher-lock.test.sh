@@ -1053,6 +1053,80 @@ SH
   pass "watcher terminated before its first beat publishes recovery"
 }
 
+test_watcher_beacon_stales_during_cleanup_publishes_recovery() {
+  local dir state fakebin out check_file check_ready cleanup_ready watcher_pid i status token real_rm
+  dir=$(make_case beacon-stales-during-cleanup)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  check_file="$state/task.check.sh"
+  check_ready="$dir/check.ready"
+  cleanup_ready="$dir/cleanup.ready"
+  real_rm=$(command -v rm)
+  mark_pr_check_migration_complete "$state"
+  cat > "$check_file" <<'SH'
+#!/usr/bin/env bash
+printf 'ready\n' > "$FM_TEST_CHECK_READY"
+trap '' HUP INT TERM
+while :; do sleep 1; done
+SH
+  chmod 0700 "$check_file"
+  FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-check-register.sh" task >/dev/null \
+    || fail "could not register cleanup-delay custom check"
+  cat > "$fakebin/rm" <<'SH'
+#!/usr/bin/env bash
+set -u
+target=
+for target do :; done
+case "$target" in
+  */.fm-check-output.*)
+    printf 'ready\n' > "$FM_TEST_CLEANUP_READY"
+    sleep 3
+    ;;
+esac
+exec "$FM_TEST_REAL_RM" "$@"
+SH
+  chmod 0700 "$fakebin/rm"
+
+  PATH="$fakebin:$PATH" FM_TEST_CHECK_READY="$check_ready" \
+    FM_TEST_CLEANUP_READY="$cleanup_ready" FM_TEST_REAL_RM="$real_rm" \
+    FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=2 FM_POLL=5 \
+    FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=0 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" 2>&1 &
+  watcher_pid=$!
+  i=0
+  while [ "$i" -lt 80 ]; do
+    [ -s "$check_ready" ] && [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$watcher_pid" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -s "$check_ready" ] || fail "watcher did not enter the cleanup-delay check: $(cat "$out")"
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$watcher_pid" ] \
+    || fail "cleanup-delay watcher did not own the singleton lock"
+
+  touch "$state/.last-watcher-beat"
+  kill -TERM "$watcher_pid" 2>/dev/null || fail "could not terminate cleanup-delay watcher"
+  wait_for_exit "$watcher_pid" 100
+  status=$?
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] \
+    || fail "cleanup-delay watcher termination did not exit nonzero (status $status)"
+  [ -s "$cleanup_ready" ] || fail "watcher cleanup did not cross the deliberate delay"
+  [ ! -s "$state/.wake-queue" ] || fail "cleanup-delay watcher unexpectedly left a queued wake"
+  [ -f "$state/.watcher-down" ] && [ ! -L "$state/.watcher-down" ] \
+    || fail "watcher whose beacon staled during cleanup did not publish recovery"
+  token=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_recovery_marker_read "$2" || exit 1
+    printf "%s\n" "$FM_RECOVERY_MARKER_TOKEN"
+  ' _ "$LIB" "$state/.watcher-down") \
+    || fail "cleanup-delay watcher published unreadable recovery evidence"
+  case "$token" in
+    pending:downtime:*|announced:downtime:*) ;;
+    *) fail "cleanup-delay watcher published invalid recovery evidence: $token" ;;
+  esac
+  pass "watcher whose beacon stales during cleanup publishes recovery"
+}
+
 test_pid_identity_is_locale_invariant() {
   # The portable fallback records its process identity under one locale, then
   # arm/guard/turn-end re-read it under the machine's ambient locale. ps's lstart
@@ -1243,3 +1317,4 @@ test_arm_fails_loud_when_no_fresh_watcher_confirmable
 test_cycle_exit_ledger_links_successor_and_stays_bounded
 test_stopped_watcher_is_live_but_stale_then_exit_is_classified
 test_watcher_stopped_before_first_beat_publishes_recovery
+test_watcher_beacon_stales_during_cleanup_publishes_recovery

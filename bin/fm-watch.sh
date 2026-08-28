@@ -1154,15 +1154,17 @@ watcher_cleanup() {
     if [ "${WATCHER_RECOVERY_PENDING:-0}" -eq 1 ] \
       && [ "${FM_WATCH_DELIVERED_REASON:-}" = "check: rearm-resurface" ]; then
       transition=release-lock-existing
-    elif [ "${WATCHER_BEAT_PROVEN:-0}" -eq 1 ] \
-      && [ "$(fm_path_age "$STATE/.last-watcher-beat")" -lt "$WATCHER_STALE_GRACE" ] \
-      && ! close_leaves_work_to_resurface; then
-      transition=release-lock-idle
     fi
   fi
   fm_active_check_stop || cleanup_status=1
   fm_check_output_cleanup
   fm_custom_check_snapshot_cleanup
+  if [ "$owns_lock" -eq 1 ] && [ "$transition" != release-lock-existing ] \
+    && ! close_leaves_work_to_resurface \
+    && [ "${WATCHER_BEAT_PROVEN:-0}" -eq 1 ] \
+    && [ "$(fm_path_age "$STATE/.last-watcher-beat")" -lt "$WATCHER_STALE_GRACE" ]; then
+    transition=release-lock-idle
+  fi
   if [ "$owns_lock" -eq 1 ] \
     && ! fm_recovery_transition "$WATCHER_DOWNTIME_MARKER" "$transition" "$WATCH_LOCK" downtime; then
     echo "watcher: recovery state could not be persisted; retaining stale lock evidence" >&2
