@@ -1137,10 +1137,10 @@ elif [ "$FM_RECOVERY_MARKER_ACTION" = recover ]; then
 fi
 # A recovery episode exists to carry work across the gap between this close and
 # the next arm: durable wakes the next arm must re-present, and open captain
-# decisions a down stretch could otherwise bury. With neither and a fresh beacon,
-# an episode has nothing to recover, and minting one would demand an acknowledgement
-# turn for an empty queue and re-announce a provably healthy home on every ordinary
-# one-shot close. docs/watcher-continuity.md owns the contract.
+# decisions a down stretch could otherwise bury. With neither and its own successful
+# fresh beat, an episode has nothing to recover, and minting one would demand an
+# acknowledgement turn for an empty queue and re-announce a provably healthy home
+# on every ordinary one-shot close. docs/watcher-continuity.md owns the contract.
 close_leaves_work_to_resurface() {
   [ ! -s "$FM_WAKE_QUEUE" ] || return 0
   [ -z "$(scan_open_decisions_incremental "$STATE")" ] || return 0
@@ -1154,7 +1154,8 @@ watcher_cleanup() {
     if [ "${WATCHER_RECOVERY_PENDING:-0}" -eq 1 ] \
       && [ "${FM_WATCH_DELIVERED_REASON:-}" = "check: rearm-resurface" ]; then
       transition=release-lock-existing
-    elif [ "$(fm_path_age "$STATE/.last-watcher-beat")" -lt "$WATCHER_STALE_GRACE" ] \
+    elif [ "${WATCHER_BEAT_PROVEN:-0}" -eq 1 ] \
+      && [ "$(fm_path_age "$STATE/.last-watcher-beat")" -lt "$WATCHER_STALE_GRACE" ] \
       && ! close_leaves_work_to_resurface; then
       transition=release-lock-idle
     fi
@@ -1175,6 +1176,7 @@ trap 'exit 1' HUP INT TERM
 # ${BASHPID:-$$} from this same main shell). Read directly, never via a command
 # substitution, so it matches the stored holder pid for the self-eviction check.
 WATCHER_PID=${BASHPID:-$$}
+WATCHER_BEAT_PROVEN=0
 printf '%s\n' "$FM_HOME" > "$WATCH_LOCK/fm-home" || true
 printf '%s\n' "$WATCH_PATH" > "$WATCH_LOCK/watcher-path" || true
 # shellcheck disable=SC2034 # Consumed by wake() in the separately linted transition owner.
@@ -1236,7 +1238,9 @@ while :; do
 
   # Liveness beacon for fm-guard.sh: a fresh mtime here means a watcher is
   # alive. Supervision scripts warn when this goes stale with tasks in flight.
-  touch "$STATE/.last-watcher-beat"
+  if touch "$STATE/.last-watcher-beat"; then
+    WATCHER_BEAT_PROVEN=1
+  fi
 
   # Parent-owned secondmate pending-reply reconciliation: resolve correlated
   # parent reports, observe backend busy/idle turn completion, send one recovery

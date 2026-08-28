@@ -988,6 +988,71 @@ test_stopped_watcher_is_live_but_stale_then_exit_is_classified() {
   pass "SIGSTOP stale-beacon close publishes and resurfaces a recovery episode"
 }
 
+test_watcher_stopped_before_first_beat_publishes_recovery() {
+  local dir state fakebin out ready touch_pid_file watcher_pid touch_pid i status token real_touch
+  dir=$(make_case stopped-before-first-beat)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  ready="$dir/touch.ready"
+  touch_pid_file="$dir/touch.pid"
+  real_touch=$(command -v touch)
+  mark_pr_check_migration_complete "$state"
+  touch "$state/.last-watcher-beat"
+  cat > "$fakebin/touch" <<'SH'
+#!/usr/bin/env bash
+set -u
+target=
+for target do :; done
+if [ "$target" = "$FM_TEST_BLOCK_TOUCH_PATH" ]; then
+  printf '%s\n' "$$" > "$FM_TEST_TOUCH_PID_FILE"
+  printf 'ready\n' > "$FM_TEST_TOUCH_READY"
+  trap 'exit 1' HUP INT TERM
+  while :; do sleep 1; done
+fi
+exec "$FM_TEST_REAL_TOUCH" "$@"
+SH
+  chmod 0700 "$fakebin/touch"
+
+  PATH="$fakebin:$PATH" FM_TEST_BLOCK_TOUCH_PATH="$state/.last-heartbeat" \
+    FM_TEST_TOUCH_PID_FILE="$touch_pid_file" FM_TEST_TOUCH_READY="$ready" \
+    FM_TEST_REAL_TOUCH="$real_touch" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" \
+    FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" 2>&1 &
+  watcher_pid=$!
+  i=0
+  while [ "$i" -lt 80 ]; do
+    [ -s "$ready" ] && [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$watcher_pid" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -s "$ready" ] || fail "watcher did not pause before its first beacon touch: $(cat "$out")"
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$watcher_pid" ] \
+    || fail "paused watcher did not own the singleton lock"
+
+  touch_pid=$(cat "$touch_pid_file" 2>/dev/null || true)
+  kill -TERM "$watcher_pid" 2>/dev/null || fail "could not terminate unproven watcher"
+  kill -TERM "$touch_pid" 2>/dev/null || true
+  wait_for_exit "$watcher_pid" 80
+  status=$?
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] \
+    || fail "unproven watcher termination did not exit nonzero (status $status)"
+  [ ! -s "$state/.wake-queue" ] || fail "unproven watcher unexpectedly left a queued wake"
+  [ -f "$state/.watcher-down" ] && [ ! -L "$state/.watcher-down" ] \
+    || fail "unproven watcher close did not publish a regular recovery marker"
+  token=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_recovery_marker_read "$2" || exit 1
+    printf "%s\n" "$FM_RECOVERY_MARKER_TOKEN"
+  ' _ "$LIB" "$state/.watcher-down") \
+    || fail "unproven watcher close published unreadable recovery evidence"
+  case "$token" in
+    pending:downtime:*|announced:downtime:*) ;;
+    *) fail "unproven watcher close published invalid recovery evidence: $token" ;;
+  esac
+  pass "watcher terminated before its first beat publishes recovery"
+}
+
 test_pid_identity_is_locale_invariant() {
   # The portable fallback records its process identity under one locale, then
   # arm/guard/turn-end re-read it under the machine's ambient locale. ps's lstart
@@ -1177,3 +1242,4 @@ test_arm_waits_for_peer_beacon_after_child_stands_down
 test_arm_fails_loud_when_no_fresh_watcher_confirmable
 test_cycle_exit_ledger_links_successor_and_stays_bounded
 test_stopped_watcher_is_live_but_stale_then_exit_is_classified
+test_watcher_stopped_before_first_beat_publishes_recovery
