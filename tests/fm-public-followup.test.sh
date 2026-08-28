@@ -151,16 +151,28 @@ seed_commitment() {
     || fail "could not register the public commitment"
 }
 
+# An RFC3339 timestamp offset from now, portable across GNU and BSD date. The
+# followup window a rechain checks is relative to the current clock, so seeding a
+# fixed calendar date would eventually fall into the past and fail the rechain
+# tests on a real wall clock. Callers pass a signed day offset such as +90 or -7.
+iso_offset_days() {  # <signed-days>
+  local d=$1
+  date -u -d "${d} days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -v"${d}d" +%Y-%m-%dT%H:%M:%SZ
+}
+
 # The pi-rearm shape: a report-ready promised-final bound to a secondmate.
 seed_repro_commitment() {   # <home> <obligation> <request> <work-home> <work-id>
-  local home=$1 obligation=$2 request=$3 work_home=$4 work_id=$5
-  jq -n --arg r "$request" \
+  local home=$1 obligation=$2 request=$3 work_home=$4 work_id=$5 received future
+  received=$(iso_offset_days -7)
+  future=$(iso_offset_days +90)
+  jq -n --arg r "$request" --arg received "$received" --arg future "$future" \
     '{request_id:$r, platform:"discord",
       context_binding:{version:"ctx1", value:("ctx1_" + $r)},
       public_safe_summary:"reproduce a Pi recovery notification loop",
-      received_at:"2026-08-21T01:12:00Z",
-      followup_expires_at:"2026-08-28T01:12:00Z",
-      reservation_expires_at:"2026-08-28T01:12:00Z"}' > "$home/request.json"
+      received_at:$received,
+      followup_expires_at:$future,
+      reservation_expires_at:$future}' > "$home/request.json"
   jq -n '{type:"report-ready", project:"firstmate",
           required_deliverables:["report_path"], completion_policy:"all-required"}' \
     > "$home/expected.json"
@@ -2007,11 +2019,14 @@ test_retention_creates_no_false_teardown_refusal() {
 }
 
 test_expiry_escalation_uses_now_override() {
-  local home out exp now_closing now_expired registry tmp
+  local home out exp now_closing now_expired registry tmp seeded_expiry
   home=$(make_home expiry-window)
   seed_repro_commitment "$home" pf-exp req-exp main work-exp
-  exp=$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' '2026-08-28T01:12:00Z' +%s 2>/dev/null) \
-    || exp=$(date -u -d '2026-08-28T01:12:00Z' +%s)
+  # Derive the clock from the value the seed actually wrote so the override math
+  # tracks the dynamic followup window instead of a fixed calendar date.
+  seeded_expiry=$(jq -r '.followup_expires_at' "$home/request.json")
+  exp=$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$seeded_expiry" +%s 2>/dev/null) \
+    || exp=$(date -u -d "$seeded_expiry" +%s)
   now_closing=$((exp - 3600))
   now_expired=$((exp + 60))
   out=$(FMX_NOW_OVERRIDE="$now_expired" run_pf "$home" pending)
