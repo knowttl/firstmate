@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Pin the Pi/OpenCode recovery-loop fix: one announcement per generation, and a
 # handling successor that keeps supervising instead of going blind.
+# Also pin the close-time convergence boundary: a healthy home with nothing to
+# resurface settles instead of re-announcing every cycle, while a close that
+# leaves durable wakes or an open decision behind still recovers.
 set -u
 
 # shellcheck source=tests/wake-helpers.sh
@@ -219,5 +222,115 @@ test_handling_successor_does_not_go_blind() {
   pass "a resurfacing handling successor stays alive and supervises instead of going blind"
 }
 
+
+# Run one real watcher against <state> until it closes on its own or the bound
+# expires, then stop it. Echoes the watcher's stdout (its wake reason, if any).
+run_watch_cycle() {  # <dir> <state> <home> <label>
+  local dir=$1 state=$2 home=$3 label=$4 out child i
+  out="$dir/watch-$label.out"
+  PATH="$dir/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$state" \
+    FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" 2>&1 &
+  child=$!
+  i=0
+  while [ "$i" -lt 40 ] && is_live_non_zombie "$child"; do
+    sleep 0.2
+    i=$((i + 1))
+  done
+  kill -TERM "$child" 2>/dev/null || true
+  wait "$child" 2>/dev/null || true
+  tr '\n' ' ' < "$out"
+}
+
+# T3: a provably healthy home with nothing to resurface must converge. Every
+# one-shot watcher close used to open a fresh recovery generation, so the next
+# drain demanded an acknowledgement turn for an empty queue on every cycle.
+test_healthy_home_with_nothing_queued_converges() {
+  local dir state home i err reason cycle_acks
+  dir=$(make_case healthy-converges)
+  state="$dir/state"
+  home="$dir/home"
+  mkdir -p "$home/data"
+  : > "$state/crew.meta"
+  : > "$state/.wake-queue"
+  chmod 600 "$state/.wake-queue"
+  cycle_acks=0
+  i=0
+  while [ "$i" -lt 3 ]; do
+    reason=$(run_watch_cycle "$dir" "$state" "$home" "healthy-$i")
+    case "$reason" in
+      *rearm-resurface*) fail "healthy close $i emitted a synthetic recovery wake: $reason" ;;
+    esac
+    err="$dir/drain-$i.err"
+    FM_HOME="$home" FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-wake-drain.sh" \
+      >/dev/null 2> "$err" || fail "drain after healthy close $i failed"
+    if grep -q '^WAKE_ACK_REQUIRED:' "$err"; then
+      cycle_acks=$((cycle_acks + 1))
+      ack_drain_err "$state" "$err" || fail "acknowledgement after healthy close $i failed"
+    fi
+    i=$((i + 1))
+  done
+  [ "$cycle_acks" -eq 0 ] \
+    || fail "a healthy home demanded $cycle_acks acknowledgement turns with nothing queued"
+  [ ! -e "$state/.watcher-down" ] \
+    || fail "healthy close left a recovery episode open: $(cat "$state/.watcher-down")"
+  if [ "${FM_TEST_EVIDENCE:-0}" = 1 ]; then
+    printf 'T3_ACK_DEMANDS=%s\n' "$cycle_acks"
+  fi
+  pass "a healthy home with nothing to resurface converges instead of re-announcing"
+}
+
+# T4: the same close must STILL open a recovery episode when the down interval
+# would otherwise bury work - queued durable wakes, or an unchanged open
+# captain decision the next arm has to re-present.
+test_close_with_work_pending_still_recovers() {
+  local dir state home reason err
+  dir=$(make_case down-still-recovers)
+  state="$dir/state"
+  home="$dir/home"
+  mkdir -p "$home/data"
+  : > "$state/crew.meta"
+  : > "$state/.wake-queue"
+  chmod 600 "$state/.wake-queue"
+
+  # A durable wake queued across the close must be recovered by the next arm.
+  append_wake "$state" check stranded 'check: stranded across the gap'
+  reason=$(run_watch_cycle "$dir" "$state" "$home" queued)
+  grep -q '^pending:downtime:\|^announced:downtime:' "$state/.watcher-down" \
+    || fail "a close with a queued wake did not leave an open recovery episode: $(cat "$state/.watcher-down" 2>/dev/null)"
+  reason=$(run_watch_cycle "$dir" "$state" "$home" queued-rearm)
+  case "$reason" in
+    *rearm-resurface*) ;;
+    *) fail "the arm after a queued-wake close did not recover it: $reason" ;;
+  esac
+  err="$dir/queued-drain.err"
+  FM_HOME="$home" FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-wake-drain.sh" \
+    >/dev/null 2> "$err" || fail "recovery drain failed"
+  grep -q '^WAKE_ACK_REQUIRED:' "$err" \
+    || fail "recovered episode did not require a generation-bound acknowledgement"
+  ack_drain_err "$state" "$err" || fail "recovery acknowledgement failed"
+
+  # An unchanged open captain decision is the no-new-rows down-window shape.
+  printf 'needs-decision [key=signoff]: held for captain sign-off\n' >> "$state/crew.status"
+  FM_HOME="$home" FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-wake-drain.sh" \
+    >/dev/null 2> "$dir/decision-baseline.err" || fail "decision baseline drain failed"
+  ack_drain_err "$state" "$dir/decision-baseline.err" >/dev/null 2>&1 || true
+  : > "$state/.wake-queue"
+  run_watch_cycle "$dir" "$state" "$home" decision >/dev/null
+  grep -q '^pending:downtime:\|^announced:downtime:' "$state/.watcher-down" \
+    || fail "a close with an open decision did not leave a recovery episode: $(cat "$state/.watcher-down" 2>/dev/null)"
+  reason=$(run_watch_cycle "$dir" "$state" "$home" decision-rearm)
+  case "$reason" in
+    *rearm-resurface*) ;;
+    *) fail "the arm after an open-decision close did not recover it: $reason" ;;
+  esac
+  if [ "${FM_TEST_EVIDENCE:-0}" = 1 ]; then
+    printf 'T4_MARKER=%s\n' "$(cat "$state/.watcher-down")"
+  fi
+  pass "a close that leaves work behind still opens and recovers its episode"
+}
+
+test_healthy_home_with_nothing_queued_converges
+test_close_with_work_pending_still_recovers
 test_handling_successor_does_not_go_blind
 test_unacknowledged_recovery_is_announced_once_per_generation

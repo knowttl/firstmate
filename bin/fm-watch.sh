@@ -1135,6 +1135,31 @@ if [ "${FM_WATCH_HANDLING_SUCCESSOR:-0}" = 1 ]; then
 elif [ "$FM_RECOVERY_MARKER_ACTION" = recover ]; then
   WATCHER_RECOVERY_PENDING=1
 fi
+# A recovery episode exists to carry work across the gap between this close and
+# the next arm: durable wakes the next arm must re-present, and open captain
+# decisions a down stretch could otherwise bury. With neither and its own successful
+# fresh beat, an episode has nothing to recover, and minting one would demand an
+# acknowledgement turn for an empty queue and re-announce a provably healthy home
+# on every ordinary one-shot close. docs/watcher-continuity.md owns the contract.
+watcher_idle_eligibility_proven() {
+  local beat_age open_decisions
+  [ ! -s "$FM_WAKE_QUEUE" ] || return 1
+  # Accepted residual: a needs-decision line appended by a crewmate's unlocked
+  # `>> task.status` while this strict scan is folding can be missed by this
+  # close, so it may skip publication despite a just-opened decision. The
+  # consequence is bounded to a one-cycle delay, not a lost decision: the append
+  # changes the status file's signature so the next watcher's ordinary signal
+  # scan wakes on it, and every drain prints its OPEN DECISIONS section from its
+  # own independent fold regardless of the recovery marker.
+  open_decisions=$(scan_open_decisions_incremental_strict "$STATE") || return 1
+  [ -z "$open_decisions" ] || return 1
+  [ "${WATCHER_BEAT_PROVEN:-0}" = 1 ] || return 1
+  beat_age=$(fm_path_age "$STATE/.last-watcher-beat") || return 1
+  case "$beat_age" in ''|*[!0-9]*) return 1 ;; esac
+  case "$WATCHER_STALE_GRACE" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$beat_age" -lt "$WATCHER_STALE_GRACE" ]
+}
+
 watcher_cleanup() {
   local cleanup_status=0 owns_lock=0 transition=release-lock
   if [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" = "${WATCHER_PID:-}" ]; then
@@ -1142,13 +1167,16 @@ watcher_cleanup() {
     if [ "${WATCHER_RECOVERY_PENDING:-0}" -eq 1 ] \
       && [ "${FM_WATCH_DELIVERED_REASON:-}" = "check: rearm-resurface" ]; then
       transition=release-lock-existing
+    else
+      transition=release-lock-idle
     fi
   fi
   fm_active_check_stop || cleanup_status=1
   fm_check_output_cleanup
   fm_custom_check_snapshot_cleanup
   if [ "$owns_lock" -eq 1 ] \
-    && ! fm_recovery_transition "$WATCHER_DOWNTIME_MARKER" "$transition" "$WATCH_LOCK" downtime; then
+    && ! fm_recovery_transition "$WATCHER_DOWNTIME_MARKER" "$transition" "$WATCH_LOCK" downtime \
+      watcher_idle_eligibility_proven; then
     echo "watcher: recovery state could not be persisted; retaining stale lock evidence" >&2
     cleanup_status=1
   fi
@@ -1160,6 +1188,7 @@ trap 'exit 1' HUP INT TERM
 # ${BASHPID:-$$} from this same main shell). Read directly, never via a command
 # substitution, so it matches the stored holder pid for the self-eviction check.
 WATCHER_PID=${BASHPID:-$$}
+WATCHER_BEAT_PROVEN=0
 printf '%s\n' "$FM_HOME" > "$WATCH_LOCK/fm-home" || true
 printf '%s\n' "$WATCH_PATH" > "$WATCH_LOCK/watcher-path" || true
 # shellcheck disable=SC2034 # Consumed by wake() in the separately linted transition owner.
@@ -1221,7 +1250,9 @@ while :; do
 
   # Liveness beacon for fm-guard.sh: a fresh mtime here means a watcher is
   # alive. Supervision scripts warn when this goes stale with tasks in flight.
-  touch "$STATE/.last-watcher-beat"
+  if touch "$STATE/.last-watcher-beat"; then
+    WATCHER_BEAT_PROVEN=1
+  fi
 
   # Parent-owned secondmate pending-reply reconciliation: resolve correlated
   # parent reports, observe backend busy/idle turn completion, send one recovery

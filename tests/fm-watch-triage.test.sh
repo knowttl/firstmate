@@ -34,7 +34,13 @@ ack_stopped_cycle() {  # <state>
   sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$err")
   generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err")
   rm -f "$err"
-  [ -n "$sequence" ] && [ -n "$generation" ] || return 1
+  # A healthy watcher that closes with an empty wake queue, no open decision and
+  # its own fresh beat is an idle close: it publishes no recovery episode, so the
+  # drain demands no acknowledgement and there is nothing to ack. Every caller
+  # here reaps such a stop, so treat "no acknowledgement demanded" as the clean
+  # convergence, not a failure. When an episode IS open (work to resurface) the
+  # drain still prints WAKE_ACK_REQUIRED and this acknowledges it as before.
+  [ -n "$sequence" ] && [ -n "$generation" ] || return 0
   FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" \
     --recovery-generation "$generation"
 }

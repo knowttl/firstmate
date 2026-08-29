@@ -29,13 +29,21 @@ mark_pr_check_migration_complete() {
   chmod 0600 "$state/.pr-check-migration-scan-v1" "$state/.pr-check-migration-v1"
 }
 
-drain_and_ack() {  # <state>
-  local state=$1 err sequence generation
+drain_and_ack() {  # <state> [allow-no-ack]
+  local state=$1 allow_no_ack=${2:-0} err sequence generation
   err="$state/.test-drain.err"
   FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2> "$err" || return 1
   sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$err")
   generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err")
   rm -f "$err"
+  if [ -z "$sequence" ] && [ -z "$generation" ]; then
+    # No acknowledgement was demanded. Only callers deliberately exercising an
+    # intentional idle close (no episode expected) accept that; every other
+    # caller must still observe WAKE_ACK_REQUIRED, so a genuine drain regression
+    # that dropped the acknowledgement is not masked.
+    [ "$allow_no_ack" = 1 ] && return 0
+    return 1
+  fi
   [ -n "$sequence" ] && [ -n "$generation" ] || return 1
   FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" \
     --recovery-generation "$generation"
@@ -892,11 +900,10 @@ SH
     || fail "predecessor ledger record was not linked to its verified successor"
   kill -HUP "$successor_arm" 2>/dev/null || true
   wait "$successor_arm" 2>/dev/null || true
-  # The forced interruption is a watcher-down interval. Consume the prior
-  # delivered wake before beginning independent ledger cycles, just as the
-  # recovery handling turn does, so this fixture does not intentionally carry a
-  # durable wake into the next arm.
-  drain_and_ack "$state" || fail "recovery drain after forced arm interruption failed"
+  # The arm's clean HUP child-stop leaves a healthy watcher with an empty queue
+  # and no open decision, so its idle close opens no recovery episode. Drain in
+  # allow-no-ack mode to confirm nothing durable is carried into the next arm.
+  drain_and_ack "$state" 1 || fail "idle drain after forced arm interruption failed"
 
   # Produce enough short cycles to cross a deliberately small cap. The cap is
   # applied by the arm layer itself and keeps only complete ledger records.
@@ -914,8 +921,8 @@ SH
     grep -qF 'watcher: started pid=' "$armout" || fail "bounded ledger cycle $iteration did not start"
     kill -HUP "$successor_arm" 2>/dev/null || true
     wait "$successor_arm" 2>/dev/null || true
-    drain_and_ack "$state" \
-      || fail "recovery drain after bounded ledger cycle $iteration failed"
+    drain_and_ack "$state" 1 \
+      || fail "idle drain after bounded ledger cycle $iteration failed"
     iteration=$((iteration + 1))
   done
   size=$(wc -c < "$state/.watch-cycle-exits.log" | tr -d '[:space:]')
@@ -926,7 +933,7 @@ SH
 }
 
 test_stopped_watcher_is_live_but_stale_then_exit_is_classified() {
-  local dir state fakebin armout armpid watcher_pid i status
+  local dir state fakebin armout armpid watcher_pid i status token recovery_armout recovery_armpid
   dir=$(make_case stopped-watcher)
   state="$dir/state"
   fakebin="$dir/fakebin"
@@ -958,7 +965,388 @@ test_stopped_watcher_is_live_but_stale_then_exit_is_classified() {
   [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "terminated stopped-watcher cycle did not surface nonzero (status $status)"
   grep -Eq 'reason=(nonzero-exit|signal-exit)' "$state/.watch-cycle-exits.log" \
     || fail "terminated watcher exit was not classified in the lifecycle ledger"
-  pass "SIGSTOP distinguishes live PID from stale beacon and termination records the exit class"
+  [ ! -s "$state/.wake-queue" ] || fail "stopped watcher unexpectedly left a queued wake before recovery"
+  [ -f "$state/.watcher-down" ] && [ ! -L "$state/.watcher-down" ] \
+    || fail "stale watcher close did not publish a regular recovery marker"
+  token=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_recovery_marker_read "$2" || exit 1
+    printf "%s\n" "$FM_RECOVERY_MARKER_TOKEN"
+  ' _ "$LIB" "$state/.watcher-down") \
+    || fail "stale watcher close published unreadable recovery evidence"
+  case "$token" in
+    pending:downtime:*|announced:downtime:*) ;;
+    *) fail "stale watcher close published invalid recovery evidence: $token" ;;
+  esac
+
+  recovery_armout="$dir/recovery-arm.out"
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" > "$recovery_armout" &
+  recovery_armpid=$!
+  wait_for_exit "$recovery_armpid" 80
+  status=$?
+  [ "$status" -ne 124 ] || fail "next arm did not recover the stale watcher episode"
+  grep -F 'check: rearm-resurface' "$recovery_armout" >/dev/null \
+    || fail "next arm did not resurface the stale watcher episode: $(cat "$recovery_armout")"
+  drain_and_ack "$state" || fail "stale watcher recovery acknowledgement failed"
+  pass "SIGSTOP stale-beacon close publishes and resurfaces a recovery episode"
+}
+
+test_watcher_stopped_before_first_beat_publishes_recovery() {
+  local dir state fakebin out ready touch_pid_file watcher_pid touch_pid i status token real_touch
+  dir=$(make_case stopped-before-first-beat)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  ready="$dir/touch.ready"
+  touch_pid_file="$dir/touch.pid"
+  real_touch=$(command -v touch)
+  mark_pr_check_migration_complete "$state"
+  touch "$state/.last-watcher-beat"
+  cat > "$fakebin/touch" <<'SH'
+#!/usr/bin/env bash
+set -u
+target=
+for target do :; done
+if [ "$target" = "$FM_TEST_BLOCK_TOUCH_PATH" ]; then
+  printf '%s\n' "$$" > "$FM_TEST_TOUCH_PID_FILE"
+  printf 'ready\n' > "$FM_TEST_TOUCH_READY"
+  trap 'exit 1' HUP INT TERM
+  while :; do sleep 1; done
+fi
+exec "$FM_TEST_REAL_TOUCH" "$@"
+SH
+  chmod 0700 "$fakebin/touch"
+
+  PATH="$fakebin:$PATH" FM_TEST_BLOCK_TOUCH_PATH="$state/.last-heartbeat" \
+    FM_TEST_TOUCH_PID_FILE="$touch_pid_file" FM_TEST_TOUCH_READY="$ready" \
+    FM_TEST_REAL_TOUCH="$real_touch" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" \
+    FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" 2>&1 &
+  watcher_pid=$!
+  i=0
+  while [ "$i" -lt 80 ]; do
+    [ -s "$ready" ] && [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$watcher_pid" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -s "$ready" ] || fail "watcher did not pause before its first beacon touch: $(cat "$out")"
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$watcher_pid" ] \
+    || fail "paused watcher did not own the singleton lock"
+
+  touch_pid=$(cat "$touch_pid_file" 2>/dev/null || true)
+  kill -TERM "$watcher_pid" 2>/dev/null || fail "could not terminate unproven watcher"
+  kill -TERM "$touch_pid" 2>/dev/null || true
+  wait_for_exit "$watcher_pid" 80
+  status=$?
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] \
+    || fail "unproven watcher termination did not exit nonzero (status $status)"
+  [ ! -s "$state/.wake-queue" ] || fail "unproven watcher unexpectedly left a queued wake"
+  [ -f "$state/.watcher-down" ] && [ ! -L "$state/.watcher-down" ] \
+    || fail "unproven watcher close did not publish a regular recovery marker"
+  token=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_recovery_marker_read "$2" || exit 1
+    printf "%s\n" "$FM_RECOVERY_MARKER_TOKEN"
+  ' _ "$LIB" "$state/.watcher-down") \
+    || fail "unproven watcher close published unreadable recovery evidence"
+  case "$token" in
+    pending:downtime:*|announced:downtime:*) ;;
+    *) fail "unproven watcher close published invalid recovery evidence: $token" ;;
+  esac
+  pass "watcher terminated before its first beat publishes recovery"
+}
+
+test_watcher_beacon_stales_during_cleanup_publishes_recovery() {
+  local dir state fakebin out check_file check_ready cleanup_ready watcher_pid i status token real_rm
+  dir=$(make_case beacon-stales-during-cleanup)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  check_file="$state/task.check.sh"
+  check_ready="$dir/check.ready"
+  cleanup_ready="$dir/cleanup.ready"
+  real_rm=$(command -v rm)
+  mark_pr_check_migration_complete "$state"
+  cat > "$check_file" <<'SH'
+#!/usr/bin/env bash
+printf 'ready\n' > "$FM_TEST_CHECK_READY"
+trap '' HUP INT TERM
+while :; do sleep 1; done
+SH
+  chmod 0700 "$check_file"
+  FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-check-register.sh" task >/dev/null \
+    || fail "could not register cleanup-delay custom check"
+  cat > "$fakebin/rm" <<'SH'
+#!/usr/bin/env bash
+set -u
+target=
+for target do :; done
+case "$target" in
+  */.fm-check-output.*)
+    printf 'ready\n' > "$FM_TEST_CLEANUP_READY"
+    sleep 3
+    ;;
+esac
+exec "$FM_TEST_REAL_RM" "$@"
+SH
+  chmod 0700 "$fakebin/rm"
+
+  PATH="$fakebin:$PATH" FM_TEST_CHECK_READY="$check_ready" \
+    FM_TEST_CLEANUP_READY="$cleanup_ready" FM_TEST_REAL_RM="$real_rm" \
+    FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=2 FM_POLL=5 \
+    FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=0 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" 2>&1 &
+  watcher_pid=$!
+  i=0
+  while [ "$i" -lt 80 ]; do
+    [ -s "$check_ready" ] && [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$watcher_pid" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -s "$check_ready" ] || fail "watcher did not enter the cleanup-delay check: $(cat "$out")"
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$watcher_pid" ] \
+    || fail "cleanup-delay watcher did not own the singleton lock"
+
+  touch "$state/.last-watcher-beat"
+  kill -TERM "$watcher_pid" 2>/dev/null || fail "could not terminate cleanup-delay watcher"
+  wait_for_exit "$watcher_pid" 100
+  status=$?
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] \
+    || fail "cleanup-delay watcher termination did not exit nonzero (status $status)"
+  [ -s "$cleanup_ready" ] || fail "watcher cleanup did not cross the deliberate delay"
+  [ ! -s "$state/.wake-queue" ] || fail "cleanup-delay watcher unexpectedly left a queued wake"
+  [ -f "$state/.watcher-down" ] && [ ! -L "$state/.watcher-down" ] \
+    || fail "watcher whose beacon staled during cleanup did not publish recovery"
+  token=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_recovery_marker_read "$2" || exit 1
+    printf "%s\n" "$FM_RECOVERY_MARKER_TOKEN"
+  ' _ "$LIB" "$state/.watcher-down") \
+    || fail "cleanup-delay watcher published unreadable recovery evidence"
+  case "$token" in
+    pending:downtime:*|announced:downtime:*) ;;
+    *) fail "cleanup-delay watcher published invalid recovery evidence: $token" ;;
+  esac
+  pass "watcher whose beacon stales during cleanup publishes recovery"
+}
+
+test_watcher_beacon_stales_waiting_for_marker_lock_publishes_recovery() {
+  local dir state fakebin out holder_ready watcher_pid holder_pid i status token
+  dir=$(make_case beacon-stales-waiting-for-marker-lock)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  holder_ready="$dir/holder.ready"
+  mark_pr_check_migration_complete "$state"
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" \
+    FM_GUARD_GRACE=2 FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 \
+    FM_HEARTBEAT=999999 "$WATCH" > "$out" 2>&1 &
+  watcher_pid=$!
+  i=0
+  while [ "$i" -lt 80 ]; do
+    [ -e "$state/.last-watcher-beat" ] \
+      && [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$watcher_pid" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$state/.last-watcher-beat" ] || fail "marker-lock watcher did not publish its first beacon"
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$watcher_pid" ] \
+    || fail "marker-lock watcher did not own the singleton lock"
+
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2" || exit 1
+    printf "ready\n" > "$3"
+    kill -STOP "${BASHPID:-$$}"
+    fm_lock_release "$2"
+  ' _ "$LIB" "$state/.watcher-down.lock" "$holder_ready" &
+  holder_pid=$!
+  i=0
+  while [ "$i" -lt 80 ] && [ ! -s "$holder_ready" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if [ ! -s "$holder_ready" ]; then
+    kill -CONT "$holder_pid" 2>/dev/null || true
+    kill -TERM "$holder_pid" 2>/dev/null || true
+    fail "marker-lock holder did not acquire the recovery lock"
+  fi
+
+  touch "$state/.last-watcher-beat"
+  if ! kill -TERM "$watcher_pid" 2>/dev/null; then
+    kill -CONT "$holder_pid" 2>/dev/null || true
+    kill -TERM "$holder_pid" 2>/dev/null || true
+    fail "could not terminate marker-lock watcher"
+  fi
+  sleep 3
+  kill -CONT "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || fail "marker-lock holder did not release cleanly"
+  wait_for_exit "$watcher_pid" 80
+  status=$?
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] \
+    || fail "marker-lock watcher termination did not exit nonzero (status $status)"
+  [ ! -s "$state/.wake-queue" ] || fail "marker-lock watcher unexpectedly left a queued wake"
+  [ -f "$state/.watcher-down" ] && [ ! -L "$state/.watcher-down" ] \
+    || fail "watcher whose beacon staled behind the marker lock did not publish recovery"
+  token=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_recovery_marker_read "$2" || exit 1
+    printf "%s\n" "$FM_RECOVERY_MARKER_TOKEN"
+  ' _ "$LIB" "$state/.watcher-down") \
+    || fail "marker-lock watcher published unreadable recovery evidence"
+  case "$token" in
+    pending:downtime:*|announced:downtime:*) ;;
+    *) fail "marker-lock watcher published invalid recovery evidence: $token" ;;
+  esac
+  pass "watcher whose beacon stales behind marker lock publishes recovery"
+}
+
+test_watcher_decision_opened_waiting_for_marker_lock_publishes_recovery() {
+  local dir state fakebin out holder_ready wait_ready watcher_pid holder_pid i status token real_sleep
+  dir=$(make_case decision-opens-waiting-for-marker-lock)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  holder_ready="$dir/holder.ready"
+  wait_ready="$dir/wait.ready"
+  real_sleep=$(command -v sleep)
+  mark_pr_check_migration_complete "$state"
+  cat > "$fakebin/sleep" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = 0.1 ]; then
+  printf 'ready\n' > "$FM_TEST_MARKER_WAIT_READY"
+fi
+exec "$FM_TEST_REAL_SLEEP" "$@"
+SH
+  chmod 0700 "$fakebin/sleep"
+  PATH="$fakebin:$PATH" FM_TEST_MARKER_WAIT_READY="$wait_ready" \
+    FM_TEST_REAL_SLEEP="$real_sleep" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" \
+    FM_GUARD_GRACE=300 FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 \
+    FM_HEARTBEAT=999999 "$WATCH" > "$out" 2>&1 &
+  watcher_pid=$!
+  i=0
+  while [ "$i" -lt 80 ]; do
+    [ -e "$state/.last-watcher-beat" ] \
+      && [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$watcher_pid" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$state/.last-watcher-beat" ] || fail "decision-race watcher did not publish its first beacon"
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$watcher_pid" ] \
+    || fail "decision-race watcher did not own the singleton lock"
+
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2" || exit 1
+    printf "ready\n" > "$3"
+    kill -STOP "${BASHPID:-$$}"
+    fm_lock_release "$2"
+  ' _ "$LIB" "$state/.watcher-down.lock" "$holder_ready" &
+  holder_pid=$!
+  i=0
+  while [ "$i" -lt 80 ] && [ ! -s "$holder_ready" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if [ ! -s "$holder_ready" ]; then
+    kill -CONT "$holder_pid" 2>/dev/null || true
+    kill -TERM "$holder_pid" 2>/dev/null || true
+    fail "decision-race marker-lock holder did not acquire the recovery lock"
+  fi
+
+  touch "$state/.last-watcher-beat"
+  if ! kill -TERM "$watcher_pid" 2>/dev/null; then
+    kill -CONT "$holder_pid" 2>/dev/null || true
+    kill -TERM "$holder_pid" 2>/dev/null || true
+    fail "could not terminate decision-race watcher"
+  fi
+  i=0
+  while [ "$i" -lt 80 ] && [ ! -s "$wait_ready" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if [ ! -s "$wait_ready" ]; then
+    kill -CONT "$holder_pid" 2>/dev/null || true
+    kill -TERM "$holder_pid" 2>/dev/null || true
+    fail "decision-race watcher did not block on the recovery lock"
+  fi
+
+  printf 'needs-decision [key=late]: choose during close\n' >> "$state/task.status"
+  kill -CONT "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || fail "decision-race marker-lock holder did not release cleanly"
+  wait_for_exit "$watcher_pid" 80
+  status=$?
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] \
+    || fail "decision-race watcher termination did not exit nonzero (status $status)"
+  [ ! -s "$state/.wake-queue" ] || fail "decision-race watcher unexpectedly left a queued wake"
+  [ -f "$state/.watcher-down" ] && [ ! -L "$state/.watcher-down" ] \
+    || fail "watcher missing a decision opened behind the marker lock did not publish recovery"
+  token=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_recovery_marker_read "$2" || exit 1
+    printf "%s\n" "$FM_RECOVERY_MARKER_TOKEN"
+  ' _ "$LIB" "$state/.watcher-down") \
+    || fail "decision-race watcher published unreadable recovery evidence"
+  case "$token" in
+    pending:downtime:*|announced:downtime:*) ;;
+    *) fail "decision-race watcher published invalid recovery evidence: $token" ;;
+  esac
+  pass "watcher sees decisions opened while waiting for marker lock"
+}
+
+test_watcher_unclassifiable_status_publishes_recovery() {
+  local dir state fakebin out reader reader_called watcher_pid i status token
+  dir=$(make_case unclassifiable-status)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  reader="$dir/status-size-reader"
+  reader_called="$dir/status-size-reader.called"
+  mark_pr_check_migration_complete "$state"
+  cat > "$reader" <<'SH'
+#!/usr/bin/env bash
+printf 'called\n' > "$FM_TEST_STATUS_READER_CALLED"
+exit 1
+SH
+  chmod 0700 "$reader"
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" \
+    FM_STATUS_SIZE_READER="$reader" FM_TEST_STATUS_READER_CALLED="$reader_called" \
+    FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" 2>&1 &
+  watcher_pid=$!
+  i=0
+  while [ "$i" -lt 80 ]; do
+    [ -e "$state/.last-watcher-beat" ] \
+      && [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$watcher_pid" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$state/.last-watcher-beat" ] || fail "strict-scan watcher did not publish its first beacon"
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$watcher_pid" ] \
+    || fail "strict-scan watcher did not own the singleton lock"
+
+  printf 'needs-decision [key=unreadable]: preserve this decision\n' > "$state/task.status"
+  kill -TERM "$watcher_pid" 2>/dev/null || fail "could not terminate strict-scan watcher"
+  wait_for_exit "$watcher_pid" 80
+  status=$?
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] \
+    || fail "strict-scan watcher termination did not exit nonzero (status $status)"
+  [ -s "$reader_called" ] || fail "strict decision scan did not exercise the failing status reader"
+  [ ! -s "$state/.wake-queue" ] || fail "strict-scan watcher unexpectedly left a queued wake"
+  [ -f "$state/.watcher-down" ] && [ ! -L "$state/.watcher-down" ] \
+    || fail "watcher with an unclassifiable status file did not publish recovery"
+  token=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_recovery_marker_read "$2" || exit 1
+    printf "%s\n" "$FM_RECOVERY_MARKER_TOKEN"
+  ' _ "$LIB" "$state/.watcher-down") \
+    || fail "strict-scan watcher published unreadable recovery evidence"
+  case "$token" in
+    pending:downtime:*|announced:downtime:*) ;;
+    *) fail "strict-scan watcher published invalid recovery evidence: $token" ;;
+  esac
+  pass "watcher with an unclassifiable status file publishes recovery"
 }
 
 test_pid_identity_is_locale_invariant() {
@@ -1150,3 +1538,8 @@ test_arm_waits_for_peer_beacon_after_child_stands_down
 test_arm_fails_loud_when_no_fresh_watcher_confirmable
 test_cycle_exit_ledger_links_successor_and_stays_bounded
 test_stopped_watcher_is_live_but_stale_then_exit_is_classified
+test_watcher_stopped_before_first_beat_publishes_recovery
+test_watcher_beacon_stales_during_cleanup_publishes_recovery
+test_watcher_beacon_stales_waiting_for_marker_lock_publishes_recovery
+test_watcher_decision_opened_waiting_for_marker_lock_publishes_recovery
+test_watcher_unclassifiable_status_publishes_recovery
