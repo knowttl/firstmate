@@ -191,13 +191,14 @@ test_live_gates_are_bounded() {
   pass "only gates that can clear on their own count as supervision need"
 }
 
-test_watcher_wakes_once_for_a_cleared_blocker() {
-  local dir state fakebin out pid
-  dir=$(make_case watcher-ready)
-  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
-  mkdir -p "$dir/data"
-  cp "$ROOT/.tasks.toml" "$dir/.tasks.toml"
-  printf '%s\n' '# Backlog' '' '## In flight' '' '## Queued' '' '## Done' > "$dir/data/backlog.md"
+test_watcher_wakes_once_for_a_cleared_blocker() (
+  local dir state socket_dir out pid
+  dir=$(make_home watcher-ready)
+  state="$dir/state"; socket_dir="$dir/tmux"; out="$dir/watch.out"
+  mkdir -p "$socket_dir"
+  TMUX_TMPDIR="$socket_dir" TMUX= tmux new-session -d -s fm-ready-work-test \
+    || fail "could not start an isolated tmux server"
+  trap 'TMUX_TMPDIR="$socket_dir" TMUX= tmux kill-server >/dev/null 2>&1 || true' EXIT
   axi "$dir" add blocker "the blocker"
   axi "$dir" add dependent "the dependent"
   axi "$dir" block dependent --by blocker
@@ -206,7 +207,7 @@ test_watcher_wakes_once_for_a_cleared_blocker() {
   external_axi "$dir" "done" blocker
   [ ! -s "$state/.wake-queue" ] || fail "setup queued a wake before the watcher: $(cat "$state/.wake-queue"); $(FM_HOME="$dir" "$ROOT/bin/fm-tasks-axi.sh" list --fields blocked,blocked_by,held,hold_until)"
 
-  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 \
+  TMUX_TMPDIR="$socket_dir" TMUX= FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   wait_for_exit "$pid" 100 || { reap "$pid"; fail "the watcher did not wake for newly ready work"; }
@@ -217,7 +218,7 @@ test_watcher_wakes_once_for_a_cleared_blocker() {
 
   ack_handled_wakes "$state" || fail "the ready-work wake could not be drained and acknowledged"
   : > "$out"
-  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 \
+  TMUX_TMPDIR="$socket_dir" TMUX= FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   rm -f "$state/.last-ready-scan"
@@ -226,7 +227,7 @@ test_watcher_wakes_once_for_a_cleared_blocker() {
   reap "$pid"
   [ ! -s "$out" ] || fail "the second watcher printed a wake: $(cat "$out")"
   pass "a real watcher wakes once for work a blocker closed outside teardown made ready"
-}
+)
 
 reap() { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
 

@@ -2513,8 +2513,9 @@ EOF
         fi
         fm_ready_work_commit "$STATE" || triage_log "ready-work record not updated; the next scan repeats this wake"
         wake "$reason"
+      else
+        fm_ready_work_commit "$STATE" || triage_log "ready-work record not updated"
       fi
-      fm_ready_work_commit "$STATE" || triage_log "ready-work record not updated"
     fi
   fi
 

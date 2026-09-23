@@ -855,6 +855,8 @@ test_answer_records_and_closes() {
   # as resolved everywhere.
   show=$(tasks_in "$home" show sample-guard-work --full)
   assert_contains "$show" "blocked: no" "the recorded answer did not release dependent work"
+  [ "$(grep -Fc 'check: ready-work: sample-guard-work' "$home/state/.wake-queue")" = 1 ] \
+    || fail "the recorded answer did not queue exactly one dependent wake"
   run_captain "$home" verify "$id" >/dev/null \
     || fail "an answered captain call did not satisfy the completion gate"
   json=$(run_bearings "$home") || fail "Bearings failed after the answer"

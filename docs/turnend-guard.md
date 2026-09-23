@@ -32,7 +32,7 @@ Registered `state/procevent/*.source` records also require supervision even thou
 The default cross-harness mode exits silently with no supervision need.
 Every mode treats `state/x-watch.check.sh` as supervision need, so Relay polling remains guarded without an in-flight task.
 A custom check registered with `bin/fm-check-register.sh` counts the same way, so an operator's home-level poll keeps running after the last task is torn down.
-Live-gated queued backlog work counts too, so a home whose only remaining work waits on a hold date or on blockers that can close on their own keeps the watcher whose ready-work scan will surface it; `bin/fm-ready-work.sh` owns which gates are live, and an undated hold never counts.
+Live-gated queued backlog work counts too; [`bin/fm-ready-work.sh`](../bin/fm-ready-work.sh) owns which gates keep a watcher running.
 Otherwise it calls `fm_watcher_healthy <state-dir> <watch-path> [grace-seconds] [home]` from `bin/fm-wake-lib.sh`, the same PID-strict identity-matched lock and fresh-beacon check used by `bin/fm-watch-arm.sh`: a stale beacon blocks even when a watcher pid is live, and a fresh leftover beacon blocks when the lock is missing, dead, or identity-mismatched.
 The turn-end guard needs that strict check because it fires at the turn boundary, where the auto-arm is bringing a fresh watcher up for the upcoming idle period, and it cooperates with that arm rather than trusting a beacon left by the cycle that just ended.
 When an active home instead has a live session lock held by a verified harness that the current session does not own, the Claude guard emits a read-only ownership diagnostic and allows the turn to end safely.
@@ -177,7 +177,7 @@ That warning uses `bin/fm-supervision-instructions.sh --repair-line`, so it alwa
 ## Compatibility limits
 
 - Child crewmate and scout worktrees are outside scope.
-- A valid secondmate home is in scope; an idle secondmate endpoint with no Relay poll remains healthy because it has no supervision need.
+- A valid secondmate home is in scope; an idle secondmate endpoint with no Relay poll or live-gated backlog work remains healthy when it has no other supervision need.
 - The blocking and bounded-follow-up mechanisms are limited to the primary integrations listed above.
 - OpenCode headless mode and untrusted Grok project hooks remain fail-open at the host boundary.
 - Cursor's `stop` step does not fire in headless `cursor-agent -p`, the same class of limit as OpenCode headless; firstmate primaries run interactive.
