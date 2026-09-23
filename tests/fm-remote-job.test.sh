@@ -20,6 +20,9 @@ OTHER_PID=
 RECOVERY_WORKER_PID=
 REPEAT_WORKER_PID=
 RESTART_SUPERVISOR_PID=
+LOST_LOCK_WORKER_PID=
+FOREIGN_OWNER_PID=
+DRIFT_ROOT="$TMP_ROOT/drift-root"
 mkdir -p "$REMOTE_ROOT/bin" "$REMOTE_HOME" "$ACCOUNT_HOME" "$RUNTIME_BIN"
 # worker.pid records the serving child, not its restart supervisor, so stopping
 # that pid alone leaves the supervisor to respawn - the leak
@@ -29,6 +32,9 @@ cleanup_remote_job_fixture() {
   [ -z "$RECOVERY_WORKER_PID" ] || kill "$RECOVERY_WORKER_PID" 2>/dev/null || true
   [ -z "$REPEAT_WORKER_PID" ] || kill "$REPEAT_WORKER_PID" 2>/dev/null || true
   [ -z "$RESTART_SUPERVISOR_PID" ] || kill -KILL "$RESTART_SUPERVISOR_PID" 2>/dev/null || true
+  [ -z "$LOST_LOCK_WORKER_PID" ] || kill -KILL "$LOST_LOCK_WORKER_PID" 2>/dev/null || true
+  [ -z "$FOREIGN_OWNER_PID" ] || kill "$FOREIGN_OWNER_PID" 2>/dev/null || true
+  pkill -KILL -f "$DRIFT_ROOT/bin/fm-remote-job-worker.sh" 2>/dev/null || true
   if [ -f "$STATE_ROOT/worker.pid" ]; then
     fm_remote_job_stop_worker_tree "$(cat "$STATE_ROOT/worker.pid")" || true
   fi
@@ -764,5 +770,166 @@ RESTART_SUPERVISOR_PID=
 assert_grep "remote job worker exited 3 times; stopping the supervisor" "$TMP_ROOT/restart-supervisor.err" \
   "the restart guard did not explain why it stopped"
 pass "barely healthy worker failures remain bounded by the restart guard"
+
+# On Linux, ps lstart is rendered from the current boot time, which every NTP,
+# VM or WSL2 time-sync, or resume step moves, so a live worker used to stop
+# matching its own records and every ensure started another supervisor. The
+# fake /proc root below changes btime the way such a step does, then reuses
+# the pid with a different start.
+PROC_FIXTURE="$TMP_ROOT/fake-proc"
+mkdir -p "$PROC_FIXTURE/4242"
+printf 'btime 1784094040\n' > "$PROC_FIXTURE/stat"
+printf '4242 (fm-remote-job) w) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 987654 20 21 22\n' \
+  > "$PROC_FIXTURE/4242/stat"
+PROC_BEFORE=$(FM_PROC_ROOT_OVERRIDE="$PROC_FIXTURE" fm_remote_job_process_start 4242) \
+  || fail "the process identity could not read a /proc start"
+[ "$PROC_BEFORE" = starttime=987654 ] \
+  || fail "the process identity did not record stat field 22 ('$PROC_BEFORE')"
+printf 'btime 1784094016\n' > "$PROC_FIXTURE/stat"
+PROC_AFTER_STEP=$(FM_PROC_ROOT_OVERRIDE="$PROC_FIXTURE" fm_remote_job_process_start 4242) \
+  || fail "the process identity could not re-read a /proc start after a clock step"
+[ "$PROC_AFTER_STEP" = "$PROC_BEFORE" ] \
+  || fail "the process identity changed with btime ('$PROC_BEFORE' then '$PROC_AFTER_STEP')"
+printf '4242 (fm-remote-job) w) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 987655 20 21 22\n' \
+  > "$PROC_FIXTURE/4242/stat"
+PROC_REUSED=$(FM_PROC_ROOT_OVERRIDE="$PROC_FIXTURE" fm_remote_job_process_start 4242) \
+  || fail "the process identity could not read a reused pid"
+[ "$PROC_REUSED" != "$PROC_BEFORE" ] || fail "the process identity missed a reused pid"
+pass "process identity ignores wall-clock steps and detects pid reuse"
+
+# A Linux worker started before start ticks were recorded holds an lstart
+# owner record that any clock step since has moved. Ensure must still
+# recognize it rather than start a supervisor beside it, drain supervisors
+# already piled up beside it, and replace it in place once its code changes.
+if [ -r "/proc/$$/stat" ]; then
+  DRIFT_HOME="$TMP_ROOT/drift-account"
+  DRIFT_STATE="$TMP_ROOT/drift-jobs"
+  cp -R "$REMOTE_ROOT" "$DRIFT_ROOT"
+  mkdir -p "$DRIFT_HOME"
+  chmod 700 "$DRIFT_HOME"
+  drift_supervisors() {
+    pgrep -f -x "/bin/bash $DRIFT_ROOT/bin/fm-remote-job-worker.sh" | wc -l | tr -d ' '
+  }
+  FM_REMOTE_JOB_STATE_ROOT=$DRIFT_STATE
+  fm_remote_job_ensure_worker "$DRIFT_ROOT" "$DRIFT_HOME" || fail "$FM_REMOTE_JOB_ERROR"
+  case "$(cat "$DRIFT_STATE/worker.lock/start")" in
+    starttime=*) ;;
+    *) fail "a Linux worker did not record its start ticks" ;;
+  esac
+  DRIFT_WORKER_PID=$(cat "$DRIFT_STATE/worker.pid")
+  printf 'Mon Jan  5 03:04:05 2026\n' > "$DRIFT_STATE/worker.lock/start"
+  for _ in 1 2 3 4 5; do
+    fm_remote_job_ensure_worker "$DRIFT_ROOT" "$DRIFT_HOME" || fail "$FM_REMOTE_JOB_ERROR"
+    [ "$(drift_supervisors)" -le 1 ] \
+      || fail "ensure started another supervisor beside a live worker whose lstart record drifted"
+  done
+  [ "$(cat "$DRIFT_STATE/worker.pid")" = "$DRIFT_WORKER_PID" ] \
+    || fail "ensure replaced a current worker whose lstart record drifted"
+  pass "ensure keeps one supervisor for a live worker whose lstart record drifted"
+
+  for _ in 1 2 3; do
+    HOME="$DRIFT_HOME" FM_ROOT_OVERRIDE="$DRIFT_ROOT" FM_REMOTE_JOB_STATE_ROOT="$DRIFT_STATE" \
+      FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux "$DRIFT_ROOT/bin/fm-remote-job-worker.sh" \
+      >> "$TMP_ROOT/drift-pile.out" 2>> "$TMP_ROOT/drift-pile.err" &
+  done
+  for _ in $(seq 1 200); do
+    [ "$(drift_supervisors)" -eq 1 ] && break
+    sleep 0.1
+  done
+  [ "$(drift_supervisors)" -eq 1 ] \
+    || fail "supervisors piled beside a live worker whose lstart record drifted did not drain"
+  [ "$(cat "$DRIFT_STATE/worker.pid")" = "$DRIFT_WORKER_PID" ] \
+    || fail "draining the piled supervisors replaced the owning worker"
+  pass "supervisors piled beside a drifted legacy owner drain"
+
+  DRIFT_OLD_PGID=$(fm_remote_job_process_pgid "$DRIFT_WORKER_PID") \
+    || fail "the drifted worker's process group could not be resolved"
+  printf '\n' >> "$DRIFT_ROOT/bin/fm-remote-job-worker.sh"
+  fm_remote_job_ensure_worker "$DRIFT_ROOT" "$DRIFT_HOME" || fail "$FM_REMOTE_JOB_ERROR"
+  [ "$(cat "$DRIFT_STATE/worker.pid")" != "$DRIFT_WORKER_PID" ] \
+    || fail "ensure retained a legacy-record worker running stale code"
+  ! kill -0 -- "-$DRIFT_OLD_PGID" 2>/dev/null \
+    || fail "ensure left the replaced legacy-record worker group alive"
+  for _ in $(seq 1 100); do
+    [ "$(drift_supervisors)" -eq 1 ] && break
+    sleep 0.1
+  done
+  [ "$(drift_supervisors)" -eq 1 ] || fail "upgrading a legacy-record worker left more than one supervisor"
+  case "$(cat "$DRIFT_STATE/worker.lock/start")" in
+    starttime=*) ;;
+    *) fail "the replacement worker did not record its start ticks" ;;
+  esac
+  fm_remote_job_stage "$DRIFT_HOME" "$DRIFT_ROOT" "$REMOTE_HOME" fm-probe-job.sh < /dev/null > /dev/null
+  JOB_ID=$FM_REMOTE_JOB_ID
+  fm_remote_job_wait "$DRIFT_HOME" "$JOB_ID" || fail "$FM_REMOTE_JOB_ERROR"
+  [ "$FM_REMOTE_JOB_EXIT" -eq 0 ] || fail "the upgraded worker did not run a job"
+  fm_remote_job_reap "$DRIFT_HOME" "$JOB_ID" || fail "the upgraded worker's job could not be reaped"
+  fm_remote_job_stop_worker_tree "$(cat "$DRIFT_STATE/worker.pid")" \
+    || fail "the upgraded worker tree did not stop"
+  FM_REMOTE_JOB_STATE_ROOT=$STATE_ROOT
+  pass "ensure replaces a legacy-record worker in place after its code changes"
+else
+  pass "lstart-record drift and upgrade checks skipped where /proc is absent"
+fi
+
+# Losing the ownership lock, whether to a competing reclaim or a removed state
+# root, must not make a serving worker immune to its stop signal: it stops its
+# own active command and exits instead of re-arming and serving on.
+LOST_HOME="$TMP_ROOT/lost-lock-account"
+LOST_STATE="$TMP_ROOT/lost-lock-jobs"
+LOST_STARTED="$TMP_ROOT/lost-lock-started"
+LOST_SIDE_EFFECT="$TMP_ROOT/lost-lock-side-effect"
+mkdir -p "$LOST_HOME"
+chmod 700 "$LOST_HOME"
+start_lost_lock_worker() {
+  HOME="$LOST_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$LOST_STATE" \
+    FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" --serve \
+    >> "$TMP_ROOT/lost-lock.out" 2>> "$TMP_ROOT/lost-lock.err" &
+  LOST_LOCK_WORKER_PID=$!
+  for _ in $(seq 1 300); do
+    [ -f "$LOST_STATE/worker.ready" ] && break
+    sleep 0.05
+  done
+  assert_present "$LOST_STATE/worker.ready" "the lost-lock worker did not become ready"
+}
+stop_lost_lock_worker_with_term() {
+  kill -TERM "$LOST_LOCK_WORKER_PID" 2>/dev/null || true
+  for _ in $(seq 1 100); do
+    kill -0 "$LOST_LOCK_WORKER_PID" 2>/dev/null || break
+    sleep 0.1
+  done
+  kill -0 "$LOST_LOCK_WORKER_PID" 2>/dev/null && fail "$1"
+  wait "$LOST_LOCK_WORKER_PID" 2>/dev/null || true
+  LOST_LOCK_WORKER_PID=
+}
+start_lost_lock_worker
+FM_REMOTE_JOB_STATE_ROOT=$LOST_STATE
+fm_remote_job_stage "$LOST_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" \
+  fm-shutdown-job.sh "$LOST_STARTED" "$LOST_SIDE_EFFECT" < /dev/null > /dev/null
+FM_REMOTE_JOB_STATE_ROOT=$STATE_ROOT
+for _ in $(seq 1 100); do
+  [ -f "$LOST_STARTED" ] && break
+  sleep 0.05
+done
+assert_present "$LOST_STARTED" "the lost-lock command did not begin executing"
+rm -rf -- "$LOST_STATE/worker.lock"
+stop_lost_lock_worker_with_term "a worker that lost its ownership lock survived its stop signal"
+sleep 3
+assert_absent "$LOST_SIDE_EFFECT" "a worker that lost its ownership lock left its command running"
+rm -rf -- "$LOST_STATE"
+start_lost_lock_worker
+sleep 30 &
+FOREIGN_OWNER_PID=$!
+rm -rf -- "$LOST_STATE/worker.lock"
+mkdir "$LOST_STATE/worker.lock"
+printf '%s\n' "$FOREIGN_OWNER_PID" > "$LOST_STATE/worker.lock/pid"
+stop_lost_lock_worker_with_term "a worker whose lock passed to another owner survived its stop signal"
+assert_absent "$LOST_STATE/worker.lock/quarantine" "a worker quarantined a lock it no longer owned"
+[ "$(cat "$LOST_STATE/worker.lock/pid")" = "$FOREIGN_OWNER_PID" ] \
+  || fail "a worker changed the owner record of a lock it no longer owned"
+kill "$FOREIGN_OWNER_PID" 2>/dev/null || true
+wait "$FOREIGN_OWNER_PID" 2>/dev/null || true
+FOREIGN_OWNER_PID=
+pass "a worker that lost its ownership lock still honors its stop signal"
 
 echo "ALL TESTS PASSED"

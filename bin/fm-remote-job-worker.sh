@@ -20,7 +20,9 @@
 # top-level --lane process that claims one job, records itself as the claim's
 # supervisor, and runs it to publication. Shutdown stops every tracked lane and
 # its recorded command group, leaving interrupted records for the replacement
-# worker's orphan recovery.
+# worker's orphan recovery. A worker that has lost its ownership lock still
+# honors a stop signal the same way and exits, without quarantining a lock it
+# no longer owns.
 #
 # The worker is abandoned when its configured FM_ROOT stops being a genuine
 # Firstmate checkout - the state a pruned no-mistakes gate worktree, a returned
@@ -183,9 +185,18 @@ worker_acquire_lock() {
   return 1
 }
 
+# A competing stale-lock reclaim or a removed state root can take the lock away
+# from a live worker, so holding it once does not prove owning it now.
+worker_owns_lock() {
+  local owner
+  [ "$WORKER_LOCK_HELD" -eq 1 ] || return 1
+  owner=$(fm_remote_job_read_single_line "$WORKER_LOCK/pid" 64 2>/dev/null) || return 1
+  [ "$owner" = "${BASHPID:-$$}" ]
+}
+
 worker_publish_quarantine() {
   local tmp
-  [ "$WORKER_LOCK_HELD" -eq 1 ] || return 1
+  worker_owns_lock || return 1
   tmp=$(umask 077; mktemp "$WORKER_LOCK/.quarantine.XXXXXX") || return 1
   printf 'active execution could not be confirmed stopped\n' > "$tmp" || { rm -f -- "$tmp"; return 1; }
   chmod 600 "$tmp" || { rm -f -- "$tmp"; return 1; }
@@ -262,7 +273,7 @@ worker_signal_process_or_group() { # process|group <signal> <pid>
 worker_supervisor_identity_status() { # <job-dir> <pid>
   local job=$1 pid=$2 recorded_start actual_start
   recorded_start=$(fm_remote_job_read_single_line "$job/.claim/supervisor_start" 256 2>/dev/null) || return 2
-  actual_start=$(fm_remote_job_process_start "$pid" 2>/dev/null) || {
+  actual_start=$(fm_remote_job_process_start_for_record "$pid" "$recorded_start" 2>/dev/null) || {
     worker_process_or_group_alive process "$pid" && return 2
     return 1
   }
@@ -279,7 +290,7 @@ worker_group_identity_status() { # <job-dir> <pid>
   local job=$1 pid=$2 recorded_start actual_start file="$1/.claim/group_start"
   [ -e "$file" ] || [ -L "$file" ] || return 3
   recorded_start=$(fm_remote_job_read_single_line "$file" 256 2>/dev/null) || return 2
-  actual_start=$(fm_remote_job_process_start "$pid" 2>/dev/null) || {
+  actual_start=$(fm_remote_job_process_start_for_record "$pid" "$recorded_start" 2>/dev/null) || {
     kill -0 "$pid" 2>/dev/null && return 2
     worker_process_or_group_alive group "$pid" && return 0
     return 1
@@ -397,8 +408,19 @@ worker_stop_active_execution() {
 # file that no later worker could clear, so every replacement then failed to
 # report ready. A shutdown that hangs is still stopped: the caller escalates to
 # KILL, which no disposition can block.
+# A worker that has already lost the lock has no ownership left to guard and
+# must not quarantine another worker's lock, so it stops its own active
+# execution and exits rather than resuming service after a stop request.
 worker_shutdown() {
   trap '' HUP INT TERM
+  if ! worker_owns_lock; then
+    WORKER_LOCK_HELD=0
+    worker_stop_active_execution || {
+      worker_error "could not stop the active command tree after losing worker ownership"
+      exit 125
+    }
+    exit 0
+  fi
   worker_publish_quarantine || {
     worker_error "cannot guard worker ownership for shutdown"
     trap worker_shutdown HUP INT TERM
@@ -457,7 +479,7 @@ worker_claim_owner_alive() { # <job-dir>
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
   if [ -e "$claim/owner_start" ] || [ -L "$claim/owner_start" ]; then
     recorded_start=$(fm_remote_job_read_single_line "$claim/owner_start" 256 2>/dev/null) || return 1
-    actual_start=$(fm_remote_job_process_start "$pid" 2>/dev/null) || return 1
+    actual_start=$(fm_remote_job_process_start_for_record "$pid" "$recorded_start" 2>/dev/null) || return 1
     [ "$recorded_start" = "$actual_start" ]
     return
   fi
