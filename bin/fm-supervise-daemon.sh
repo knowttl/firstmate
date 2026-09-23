@@ -144,6 +144,12 @@
 #                                   not misread as pending input.
 #          FM_INJECT_CONFIRM_SLEEP  seconds between daemon submit checks
 #                                   (default 0.5)
+#          FM_INJECT_MAX_BYTES      byte budget for one injected digest
+#                                   (default 1000); older escalations go first,
+#                                   an item too long to fit alone is truncated
+#                                   with a marker naming its status log, and
+#                                   the rest wait for later batches (see the
+#                                   digest byte bound above escalate_flush)
 #          FM_LOG_MAX_BYTES / FM_LOG_KEEP_LINES / FM_CRASH_*  log + crash guards
 #          FM_STATE_OVERRIDE        alternate state dir (testing)
 #          Logs each wake to state/.supervise-daemon.log (size-capped). Single
@@ -224,6 +230,7 @@ WEDGE_ALARM_NOTIFIER_PID=
 INJECT_FAIL_SLEEP_DEFAULT=30
 INJECT_CONFIRM_RETRIES_DEFAULT=3
 INJECT_CONFIRM_SLEEP_DEFAULT=0.5
+INJECT_MAX_BYTES_DEFAULT=1000
 CRASH_THRESHOLD_DEFAULT=10
 CRASH_WINDOW_DEFAULT=60
 CRASH_BACKOFF_DEFAULT=60
@@ -699,21 +706,118 @@ escalate_add() {  # <state> <distilled-item>
   printf '%s\n' "$item" >> "$buf"
 }
 
-# Flush the escalation buffer as ONE batched, single-line digest to the
-# supervisor pane. Returns 0 on successful inject (or empty buffer), non-zero on
+# --- digest byte bound ---------------------------------------------------------
+# One inject is typed as a single argument to the backend's send command, so it
+# must stay below every transport ceiling it can meet: Linux refuses any single
+# exec argument of 128 KiB or more, tmux refuses a command of about 16 KB, and a
+# Claude composer on Herdr can drop the head of a typed burst above about 1,020
+# characters. A digest over a ceiling never reaches the pane, and because the
+# buffer is kept on failure every retry would resend the same batch forever.
+# escalate_flush therefore sends at most FM_INJECT_MAX_BYTES of typed text per
+# inject and leaves the rest buffered for later batches.
+
+_inject_max_bytes() {
+  local v=${FM_INJECT_MAX_BYTES:-$INJECT_MAX_BYTES_DEFAULT}
+  case "$v" in ''|*[!0-9]*) v=$INJECT_MAX_BYTES_DEFAULT ;; esac
+  [ "$v" -gt 0 ] || v=$INJECT_MAX_BYTES_DEFAULT
+  printf '%s' "$v"
+}
+
+# Byte length of <text>, independent of the caller's locale.
+_byte_len() (  # <text>
+  LC_ALL=C
+  printf '%s' "${#1}"
+)
+
+# The longest prefix of <text> of at most <max> bytes that does not end inside
+# a UTF-8 sequence.
+_cut_bytes() (  # <text> <max-bytes>
+  LC_ALL=C
+  s=$1
+  [ "${#s}" -gt "$2" ] || { printf '%s' "$s"; exit 0; }
+  s=${s:0:$2}
+  t=$s
+  c=0
+  while :; do
+    case "${t: -1}" in [$'\x80'-$'\xbf']) t=${t%?}; c=$((c + 1)) ;; *) break ;; esac
+  done
+  case "${t: -1}" in
+    [$'\xc0'-$'\xdf']) need=1 ;;
+    [$'\xe0'-$'\xef']) need=2 ;;
+    [$'\xf0'-$'\xf7']) need=3 ;;
+    *) need=$c ;;
+  esac
+  # Drop the last character only when the cut left it incomplete.
+  [ "$c" -eq "$need" ] || s=${t%?}
+  printf '%s' "$s"
+)
+
+# Shorten one buffered item by at least <over> bytes and end it with a marker
+# naming the dropped byte count and, for a status-log event, the log that still
+# holds the full text.
+_escalation_item_truncate() (  # <item> <over-bytes> <state>
+  item=$1 over=$2 state=$3 source=''
+  LC_ALL=C
+  case "$item" in
+    *.status:\ *)
+      name=${item%%.status: *}
+      case "$name" in ''|*[!A-Za-z0-9._-]*) ;; *) source="; full text in $state/$name.status" ;; esac ;;
+  esac
+  # The marker is sized with the item's full length, which bounds the digits of
+  # the count actually dropped.
+  marker=" ... [+${#item} bytes truncated$source]"
+  keep=$(( ${#item} - over - ${#marker} ))
+  [ "$keep" -gt 0 ] || keep=0
+  head=$(_cut_bytes "$item" "$keep")
+  printf '%s ... [+%s bytes truncated%s]' "$head" "$(( ${#item} - ${#head} ))" "$source"
+)
+
+_escalation_digest() {  # <count> <queued> <joined-items>
+  local more=''
+  [ "$2" -le 0 ] || more=", $2 more queued"
+  printf 'Supervisor escalate (%s event(s)%s): %s (pre-read; re-arm not needed — watcher daemon-managed)' "$1" "$more" "$3"
+}
+
+# Flush the oldest buffered escalations that fit one inject as a single-line
+# digest to the supervisor pane. A first item too large to fit alone is
+# truncated, so every flush delivers at least one item. Returns 0 on successful
+# inject (or empty buffer) after removing only the delivered lines, non-zero on
 # inject failure (buffer preserved for retry / catch-up).
 escalate_flush() {  # <state>
-  local state=$1 buf item n msg
+  local state=$1 buf budget total envelope envelope_bytes item joined='' try msg='' over taken=0
   buf="$state/.subsuper-escalations"
   [ -s "$buf" ] || return 0
-  n=$(wc -l < "$buf" 2>/dev/null || echo 0)
-  # Join buffered items with the literal " | " separator into one digest line.
-  msg=$(awk 'NR>1{printf " | "} {printf "%s",$0} END{print ""}' "$buf" 2>/dev/null)
-  # Single-line wrapper: no embedded newlines (inject_msg also collapses as a
-  # safety net, but keeping the source single-line makes the intent explicit).
-  msg=$(printf 'Supervisor escalate (%s event(s)): %s (pre-read; re-arm not needed — watcher daemon-managed)' "$n" "$msg")
-  if inject_msg "$msg" "$state"; then : > "$buf"; rm -f "${buf}.since" "$state/.subsuper-inject-wedged"; return 0; fi
-  return 1
+  [ -f "$buf" ] || return 1
+  budget=$(_inject_max_bytes)
+  total=$(wc -l < "$buf" 2>/dev/null) || total=0
+  total=${total//[!0-9]/}
+  # inject_msg wraps the digest in the typed envelope, which counts too.
+  fm_operational_input_encode away-supervisor x envelope || return 1
+  envelope_bytes=$(( $(_byte_len "$envelope") - 1 ))
+  while IFS= read -r item || [ -n "$item" ]; do
+    try=$(_escalation_digest "$((taken + 1))" "$((total - taken - 1))" "${joined:+$joined | }$item")
+    over=$(( envelope_bytes + $(_byte_len "$try") - budget ))
+    if [ "$over" -gt 0 ]; then
+      [ "$taken" -eq 0 ] || break
+      item=$(_escalation_item_truncate "$item" "$over" "$state")
+      try=$(_escalation_digest 1 "$((total - 1))" "$item")
+    fi
+    # Join items with the literal " | " separator into one digest line.
+    joined=${joined:+$joined | }$item
+    msg=$try
+    taken=$((taken + 1))
+  done < "$buf"
+  inject_msg "$msg" "$state" || return 1
+  if tail -n +"$((taken + 1))" "$buf" > "${buf}.tmp" 2>/dev/null; then
+    mv -f "${buf}.tmp" "$buf"
+  else
+    rm -f "${buf}.tmp"
+  fi
+  # Delivery works again, so the max-defer clock restarts for any remainder and
+  # the next batch goes after the normal batch window.
+  if [ -s "$buf" ]; then _now > "${buf}.since"; else rm -f "${buf}.since"; fi
+  rm -f "$state/.subsuper-inject-wedged"
+  return 0
 }
 
 # --- backend-independent active wedge alert ---------------------------------
@@ -1296,7 +1400,13 @@ inject_msg() {  # <message> [state]
   if [ "$verdict" = empty ]; then
     return 0  # Backend confirmed the submit.
   fi
-  log "inject failed: submit unconfirmed after $retries retries (verdict=$verdict, text may be in composer)"
+  # send-failed means the backend send command itself failed, so no submit was
+  # ever confirmed or retried; say so rather than blaming the composer.
+  if [ "$verdict" = send-failed ]; then
+    log "inject failed: backend refused the send (verdict=send-failed, $(_byte_len "$msg") bytes)"
+  else
+    log "inject failed: submit unconfirmed after $retries retries (verdict=$verdict, $(_byte_len "$msg") bytes, text may be in composer)"
+  fi
   return 1
 }
 

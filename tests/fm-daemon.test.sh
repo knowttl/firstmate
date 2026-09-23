@@ -1432,6 +1432,83 @@ test_escalate_batches_into_one_digest() {
   pass "multiple escalations flush as a single batched digest"
 }
 
+# An oversized buffer (the 2026-09-22 overnight shape: one catch-all span far
+# over the kernel's single-argument limit) must drain in bounded batches: each
+# typed digest fits FM_INJECT_MAX_BYTES, only delivered lines leave the buffer,
+# and an item too long to fit alone is truncated with a pointer to its log.
+test_escalate_flush_bounds_each_digest() {
+  local dir state fakebin sent capture big flushes=0 line bytes
+  dir=$(make_supercase batch-bounded)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  sent="$dir/sent.log"; : > "$sent"
+  capture="$dir/pane.txt"; printf '\342\235\257 \n' > "$capture"
+  big=$(head -c 200000 /dev/zero | tr '\0' 'x')
+  escalate_add "$state" "event A: done: PR 1"
+  escalate_add "$state" "event B: done: PR 2"
+  escalate_add "$state" "big-t1.status: done: $big"
+  escalate_add "$state" "event C: done: PR 3"
+  afk_enter "$state"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_PANE_ALIVE=1 FM_FAKE_TMUX_SENT="$sent" \
+    FM_FAKE_TMUX_CAPTURE="$capture" escalate_flush "$state" \
+    || fail "first bounded flush failed"
+  grep -F 'Supervisor escalate (2 event(s), 2 more queued): event A: done: PR 1 | event B: done: PR 2 (pre-read' "$sent" >/dev/null \
+    || fail "first batch did not carry exactly the two oldest items that fit"
+  [ "$(wc -l < "$state/.subsuper-escalations")" -eq 2 ] \
+    || fail "partial flush did not keep exactly the undelivered lines"
+  head -1 "$state/.subsuper-escalations" | grep -q '^big-t1.status: done: ' \
+    || fail "partial flush reordered or dropped the undelivered oversized item"
+  [ -e "$state/.subsuper-escalations.since" ] || fail "partial flush dropped the remainder's first-append sidecar"
+
+  while [ -s "$state/.subsuper-escalations" ] && [ "$flushes" -lt 5 ]; do
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_PANE_ALIVE=1 FM_FAKE_TMUX_SENT="$sent" \
+      FM_FAKE_TMUX_CAPTURE="$capture" escalate_flush "$state" \
+      || fail "bounded follow-up flush failed"
+    flushes=$((flushes + 1))
+  done
+  [ ! -s "$state/.subsuper-escalations" ] || fail "bounded flushes did not drain the buffer"
+  [ ! -e "$state/.subsuper-escalations.since" ] || fail "drained buffer kept its first-append sidecar"
+  [ "$(grep -c '\[ENTER\]' "$sent")" -eq 3 ] || fail "expected three bounded digests"
+  grep -F "big-t1.status: done: xxx" "$sent" | grep -F "bytes truncated; full text in $state/big-t1.status]" >/dev/null \
+    || fail "oversized item was not truncated with a pointer to its status log"
+  grep -F 'Supervisor escalate (1 event(s)): event C: done: PR 3 (pre-read' "$sent" >/dev/null \
+    || fail "last item was not delivered after the oversized one"
+  while IFS= read -r line; do
+    [ "$line" = '[ENTER]' ] && continue
+    bytes=$(LC_ALL=C; printf '%s' "${#line}")
+    [ "$bytes" -le "$INJECT_MAX_BYTES_DEFAULT" ] || fail "a typed digest was $bytes bytes, over the $INJECT_MAX_BYTES_DEFAULT-byte budget"
+  done < "$sent"
+  pass "an oversized escalation buffer drains in bounded batches and truncates an oversized item"
+}
+
+test_escalate_flush_truncates_on_a_character_boundary() {
+  local out
+  out=$(_cut_bytes 'ab'$'\xc3\xa9''cd' 3)
+  [ "$out" = 'ab' ] || fail "cut inside a two-byte character kept a partial sequence: $(printf '%s' "$out" | od -An -tx1)"
+  out=$(_cut_bytes 'ab'$'\xc3\xa9''cd' 4)
+  [ "$out" = 'ab'$'\xc3\xa9' ] || fail "cut after a complete character dropped it"
+  pass "digest truncation never splits a UTF-8 character"
+}
+
+test_escalate_flush_send_refusal_is_logged_honestly() {
+  local dir state fakebin sent
+  dir=$(make_bordered_case send-refused)
+  state="$dir/state"; fakebin="$dir/fakebin"
+  sent="$dir/sent.log"; : > "$sent"
+  escalate_add "$state" "needs-decision: pick A"
+  afk_enter "$state"
+  if PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" FM_FAKE_SEND_FAIL=1 \
+    FM_INJECT_CONFIRM_SLEEP=0.05 LOG="$dir/daemon.log" escalate_flush "$state"; then
+    fail "escalate_flush succeeded although the backend refused the send"
+  fi
+  grep -E 'inject failed: backend refused the send \(verdict=send-failed, [0-9]+ bytes\)' "$dir/daemon.log" >/dev/null \
+    || fail "send refusal was not logged as a backend refusal with its byte count: $(cat "$dir/daemon.log")"
+  grep -F 'text may be in composer' "$dir/daemon.log" >/dev/null && fail "send refusal still blamed the composer"
+  [ -s "$state/.subsuper-escalations" ] || fail "buffer lost after a refused send"
+  pass "a refused backend send is logged as such, with the digest size"
+}
+
 test_escalate_batch_age_uses_first_append() {
   local dir state fakebin sent capture
   dir=$(make_supercase batch-age)
@@ -2818,6 +2895,9 @@ test_housekeeping_herdr_idle_busy_record_clears_stale
 test_housekeeping_herdr_resumed_stale_cleared
 test_housekeeping_orca_persistent_stale_resolves_terminal
 test_escalate_batches_into_one_digest
+test_escalate_flush_bounds_each_digest
+test_escalate_flush_truncates_on_a_character_boundary
+test_escalate_flush_send_refusal_is_logged_honestly
 test_escalate_batch_age_uses_first_append
 test_heartbeat_scan_dedup
 test_handle_wake_routes_self_and_escalate
