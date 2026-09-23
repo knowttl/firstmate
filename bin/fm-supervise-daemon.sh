@@ -144,12 +144,6 @@
 #                                   not misread as pending input.
 #          FM_INJECT_CONFIRM_SLEEP  seconds between daemon submit checks
 #                                   (default 0.5)
-#          FM_INJECT_MAX_BYTES      byte budget for one injected digest
-#                                   (default 1000); older escalations go first,
-#                                   an item too long to fit alone is truncated
-#                                   with a marker naming its status log, and
-#                                   the rest wait for later batches (see the
-#                                   digest byte bound above escalate_flush)
 #          FM_LOG_MAX_BYTES / FM_LOG_KEEP_LINES / FM_CRASH_*  log + crash guards
 #          FM_STATE_OVERRIDE        alternate state dir (testing)
 #          Logs each wake to state/.supervise-daemon.log (size-capped). Single
@@ -230,7 +224,8 @@ WEDGE_ALARM_NOTIFIER_PID=
 INJECT_FAIL_SLEEP_DEFAULT=30
 INJECT_CONFIRM_RETRIES_DEFAULT=3
 INJECT_CONFIRM_SLEEP_DEFAULT=0.5
-INJECT_MAX_BYTES_DEFAULT=1000
+INJECT_MAX_BYTES=1000
+ESCALATION_ITEM_MAX_BYTES=800
 CRASH_THRESHOLD_DEFAULT=10
 CRASH_WINDOW_DEFAULT=60
 CRASH_BACKOFF_DEFAULT=60
@@ -700,10 +695,23 @@ stale_window_is_busy() {  # <window> <state>
 }
 
 escalate_add() {  # <state> <distilled-item>
-  local state=$1 item=$2 buf
+  local state=$1 item=$2 buf part rest over
   buf="$state/.subsuper-escalations"
   [ -s "$buf" ] || _now > "${buf}.since"
-  printf '%s\n' "$item" >> "$buf"
+  while :; do
+    rest=${item#* | }
+    if [ "$rest" != "$item" ] && [[ $rest =~ ^[A-Za-z0-9._-]+\.status:\  ]]; then
+      part=${item%% | *}
+      item=$rest
+    else
+      part=$item
+      item=
+    fi
+    over=$(( $(_byte_len "$part") - ESCALATION_ITEM_MAX_BYTES ))
+    [ "$over" -le 0 ] || part=$(_escalation_item_truncate "$part" "$over" "$state")
+    printf '%s\n' "$part" >> "$buf" || return 1
+    [ -n "$item" ] || break
+  done
 }
 
 # --- digest byte bound ---------------------------------------------------------
@@ -713,15 +721,8 @@ escalate_add() {  # <state> <distilled-item>
 # Claude composer on Herdr can drop the head of a typed burst above about 1,020
 # characters. A digest over a ceiling never reaches the pane, and because the
 # buffer is kept on failure every retry would resend the same batch forever.
-# escalate_flush therefore sends at most FM_INJECT_MAX_BYTES of typed text per
+# escalate_flush therefore sends at most INJECT_MAX_BYTES of typed text per
 # inject and leaves the rest buffered for later batches.
-
-_inject_max_bytes() {
-  local v=${FM_INJECT_MAX_BYTES:-$INJECT_MAX_BYTES_DEFAULT}
-  case "$v" in ''|*[!0-9]*) v=$INJECT_MAX_BYTES_DEFAULT ;; esac
-  [ "$v" -gt 0 ] || v=$INJECT_MAX_BYTES_DEFAULT
-  printf '%s' "$v"
-}
 
 # Byte length of <text>, independent of the caller's locale.
 _byte_len() (  # <text>
@@ -788,7 +789,7 @@ escalate_flush() {  # <state>
   buf="$state/.subsuper-escalations"
   [ -s "$buf" ] || return 0
   [ -f "$buf" ] || return 1
-  budget=$(_inject_max_bytes)
+  budget=$INJECT_MAX_BYTES
   total=$(wc -l < "$buf" 2>/dev/null) || total=0
   total=${total//[!0-9]/}
   # inject_msg wraps the digest in the typed envelope, which counts too.
@@ -1400,10 +1401,8 @@ inject_msg() {  # <message> [state]
   if [ "$verdict" = empty ]; then
     return 0  # Backend confirmed the submit.
   fi
-  # send-failed means the backend send command itself failed, so no submit was
-  # ever confirmed or retried; say so rather than blaming the composer.
   if [ "$verdict" = send-failed ]; then
-    log "inject failed: backend refused the send (verdict=send-failed, $(_byte_len "$msg") bytes)"
+    log "inject failed: backend text send or submit key failed (verdict=send-failed, $(_byte_len "$msg") bytes, text may be in composer)"
   else
     log "inject failed: submit unconfirmed after $retries retries (verdict=$verdict, $(_byte_len "$msg") bytes, text may be in composer)"
   fi

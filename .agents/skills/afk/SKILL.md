@@ -179,7 +179,7 @@ immediate) and flushed as one single-line digest prefixed with the current
 operational prefix, carrying pre-read status summaries and a recommended action.
 The single-line format makes the submission unambiguous across harnesses, and
 the operational prefix lets firstmate distinguish it from a real captain message.
-Each digest is capped at `FM_INJECT_MAX_BYTES` (default 1000) so it stays below every transport limit it must pass; a digest that names more queued events is followed by later batches, and an event cut short by the cap points at the status log holding its full text.
+Each digest has a fixed 1,000-byte bound so it stays below every transport limit it must pass; queued events follow in later batches, and truncated status events point to their full status logs.
 
 ### Injection hardening
 
