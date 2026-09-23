@@ -48,7 +48,9 @@
 #   request_turn_completed_epoch=
 #   recovery_attempted_epoch=
 #   recovery_sender_pid=
-#   recovery_sender_identity=
+#   recovery_sender_identity= Linux /proc start ticks plus full cmdline hex;
+#                             ps lstart plus command where /proc is unavailable.
+#                             Existing ps-form records remain readable.
 #   recovery_sent_epoch=
 #   recovery_delivery_outcome=
 #   recovery_turn_seen_busy=
@@ -984,7 +986,8 @@ fm_pending_reply_pid_identity() {  # <pid>
   # /proc stat field 22 counts clock ticks since boot, so a host clock step
   # cannot change it; ps lstart re-renders those ticks against the wall-clock
   # boot time (WSL2 steps it about every 30 seconds) and would read a live
-  # sender as dead. The full cmdline keeps PID reuse a mismatch.
+  # sender as dead. Start ticks distinguish reused PIDs; the full cmdline
+  # preserves the sender command identity.
   if [ -r "$proc_root/$pid/stat" ] && [ -r "$proc_root/$pid/cmdline" ]; then
     stat_line=$(cat "$proc_root/$pid/stat" 2>/dev/null) || return 1
     # After the final comm delimiter, array index 19 is proc stat field 22.

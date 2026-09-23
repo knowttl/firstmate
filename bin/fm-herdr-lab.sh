@@ -30,6 +30,8 @@
 # bin/fm-herdr-lab-viewer.py owns the pty mechanics.
 # Start succeeds only when that session reports a foreground client and the
 # recorded viewer process still matches its launch identity.
+# When /proc stat is readable, the viewer records start ticks for both processes;
+# existing ps lstart records remain readable for a running viewer.
 # Stop signals only identity-matched recorded processes and retains its
 # ownership record until detach is confirmed or the session is stopped or
 # absent; teardown refuses when that stop cannot be confirmed.
