@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tests/fm-afk-inject-e2e.test.sh - private-socket end-to-end test for the afk
-# daemon's injection path. It covers three operator-visible injection contracts:
+# daemon's injection path. It covers four operator-visible injection contracts:
 #
 #   Scenario A (human-partial-input): a partial line is typed into the
 #     supervisor pane with NO Enter, then an escalation fires. The daemon must
@@ -14,6 +14,10 @@
 #   Scenario C (normal digest): no human input and no swallowed Enter.
 #     A captain-relevant status must deliver exactly ONE sentinel-prefixed,
 #     single-line digest with no duplicate or spurious user submission.
+#
+#   Scenario D (oversized buffer): buffered items over tmux's command limit and
+#     the kernel's single-argument limit must still drain, as bounded digests
+#     that truncate the oversized items and deliver every event.
 #
 # Isolation: all test tmux runs on a dedicated socket (tmux -L afk-e2e-<pid>).
 # A tmux shim first on PATH redirects the daemon's bare `tmux` calls to the
@@ -421,8 +425,61 @@ test_scenario_c() {
   pass "Scenario C: a normal captain status injects exactly one clean single-line sentinel digest"
 }
 
+# --- Scenario D: oversized buffer drains in bounded digests -----------------
+# One buffered item over the kernel's 128 KiB single-argument limit and one over
+# tmux's ~16 KB command limit: joined into one digest, real tmux (or exec)
+# refuses the send and the buffer never drains. Each flush must instead send at
+# most 1,000 bytes and keep the rest for the next batch.
+
+test_scenario_d() {
+  local big mid i=0 injections line text bytes
+  reset_state
+  big=$(head -c 150000 /dev/zero | tr '\0' 'x')
+  mid=$(head -c 20000 /dev/zero | tr '\0' 'y')
+  : > "$STATE_DIR/big-d1.status"
+  : > "$STATE_DIR/mid-d2.status"
+  escalate_add "$STATE_DIR" "event A: done: PR https://example.test/pr/401"
+  escalate_add "$STATE_DIR" "big-d1.status: done: $big | extra context" "$STATE_DIR/big-d1.status"
+  escalate_add "$STATE_DIR" "mid-d2.status: done: $mid" "$STATE_DIR/mid-d2.status"
+  escalate_add "$STATE_DIR" "event B: done: PR https://example.test/pr/402"
+  afk_enter "$STATE_DIR"
+  start_daemon
+
+  while [ -s "$STATE_DIR/.subsuper-escalations" ] && [ "$i" -lt 150 ]; do
+    sleep 0.2
+    i=$((i + 1))
+  done
+  [ ! -s "$STATE_DIR/.subsuper-escalations" ] \
+    || fail "Scenario D: oversized buffer did not drain: $(grep 'inject' "$STATE_DIR/.supervise-daemon.log" | tail -3)"
+  sleep 1
+
+  injections=$(grep -c $'\tinjection$' "$LOG_FILE" || true)
+  [ "$injections" -ge 2 ] || fail "Scenario D: expected multiple bounded digests, got $injections"
+  grep -F 'more queued' "$LOG_FILE" >/dev/null && fail "Scenario D: digest announced a queued count"
+  while IFS= read -r line; do
+    text=$(printf '%s' "$line" | cut -f2)
+    bytes=$(LC_ALL=C; printf '%s' "${#text}")
+    [ "$bytes" -le 1000 ] || fail "Scenario D: a submitted digest was $bytes bytes"
+  done < "$LOG_FILE"
+  grep -F 'event A: done: PR https://example.test/pr/401' "$LOG_FILE" >/dev/null \
+    || fail "Scenario D: first small event not delivered"
+  grep -F "big-d1.status: done: xxx" "$LOG_FILE" | grep -F "bytes truncated; full text in $STATE_DIR/big-d1.status]" >/dev/null \
+    || fail "Scenario D: over-128KiB item not delivered truncated with its log pointer"
+  grep -F "mid-d2.status: done: yyy" "$LOG_FILE" | grep -F "bytes truncated; full text in $STATE_DIR/mid-d2.status]" >/dev/null \
+    || fail "Scenario D: over-16KB item not delivered truncated with its log pointer"
+  grep -F 'event B: done: PR https://example.test/pr/402' "$LOG_FILE" >/dev/null \
+    || fail "Scenario D: last small event not delivered"
+  if grep -q 'inject failed' "$STATE_DIR/.supervise-daemon.log"; then
+    fail "Scenario D: an inject failed: $(grep 'inject failed' "$STATE_DIR/.supervise-daemon.log" | head -1)"
+  fi
+
+  stop_daemon
+  pass "Scenario D: an oversized escalation buffer drains through real tmux in bounded digests"
+}
+
 test_scenario_a
 test_scenario_b
 test_scenario_c
+test_scenario_d
 
 echo "all e2e injection tests passed"
