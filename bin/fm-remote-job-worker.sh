@@ -448,7 +448,7 @@ worker_stop_recorded_execution() { # <job-dir>
 worker_lane_identity_matches() { # <pid> <start>
   local pid=$1 start=$2 actual_start
   [ -n "$start" ] || return 1
-  actual_start=$(fm_remote_job_process_start "$pid" 2>/dev/null) || return 1
+  actual_start=$(fm_remote_job_process_start_for_record "$pid" "$start" 2>/dev/null) || return 1
   [ "$actual_start" = "$start" ]
 }
 

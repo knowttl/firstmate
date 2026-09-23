@@ -29,6 +29,7 @@ STALL_WORKER_PID=
 STALL_REPLACEMENT_PID=
 STALL_JOB_GROUP=
 QUIET_WORKER_PID=
+DRIFT_ROOT="$TMP_ROOT/drift-root"
 mkdir -p "$REMOTE_ROOT/bin" "$REMOTE_HOME" "$ACCOUNT_HOME" "$RUNTIME_BIN"
 # worker.pid records the serving child, not its restart supervisor, so stopping
 # that pid alone leaves the supervisor to respawn - the leak
@@ -51,6 +52,7 @@ cleanup_remote_job_fixture() {
     wait "$stall_pid" 2>/dev/null || true
   done
   [ -z "$STALL_JOB_GROUP" ] || kill -KILL -- "-$STALL_JOB_GROUP" 2>/dev/null || true
+  pkill -KILL -f "$DRIFT_ROOT/bin/fm-remote-job-worker.sh" 2>/dev/null || true
   if [ -f "$STATE_ROOT/worker.pid" ]; then
     fm_remote_job_stop_worker_tree "$(cat "$STATE_ROOT/worker.pid")" || true
   fi
@@ -1390,5 +1392,4 @@ kill "$FOREIGN_OWNER_PID" 2>/dev/null || true
 wait "$FOREIGN_OWNER_PID" 2>/dev/null || true
 FOREIGN_OWNER_PID=
 pass "a worker that lost its ownership lock still honors its stop signal"
-
 echo "ALL TESTS PASSED"
