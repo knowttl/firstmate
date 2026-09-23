@@ -173,6 +173,7 @@ fm_supervision_status "$STATE" "$GRACE"
 in_flight=$FM_SUP_IN_FLIGHT
 sources=$FM_SUP_SOURCES
 checks=$FM_SUP_CHECKS
+gated=$FM_SUP_GATED
 needed=$FM_SUP_NEEDED
 beacon_desc=$FM_SUP_BEACON_DESC
 fm_watcher_supervision_verdict "$STATE" "$WATCH" "$GRACE" "$FM_HOME" "$FM_ROOT"
@@ -240,6 +241,8 @@ if [ "$watcher_healthy" = false ]; then
         printf '●  %s process-event source(s) registered, but %s.\n' "$sources" "$watcher_cause"
       elif [ "$checks" -gt 0 ]; then
         printf '●  %s registered custom check(s), but %s.\n' "$checks" "$watcher_cause"
+      elif [ "$gated" -gt 0 ]; then
+        printf '●  %s queued backlog item(s) wait on a date or blocker, but %s.\n' "$gated" "$watcher_cause"
       else
         printf '●  X-mode relay polling needs supervision, but %s.\n' "$watcher_cause"
       fi

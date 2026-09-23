@@ -112,6 +112,11 @@
 #                          running a check or removing poll artifacts
 #   heartbeat              fleet-scan backstop found an unsurfaced captain-relevant
 #                          status, unless afk is active
+#   check: ready-work: <ids>
+#                          queued backlog work became ready (a date gate passed
+#                          or its blockers closed) and has not been surfaced;
+#                          once per readiness transition, in every posture
+#                          (bin/fm-ready-work.sh owns readiness and dedup)
 #   check: inactive-outcome bounded poll-loop reconciliation found a suspicious
 #                          inactive terminal outcome that still lacks its durable
 #                          upstream receipt
@@ -195,6 +200,8 @@ mkdir -p "$STATE"
 # watcher reads only its presence (afk_record_present below).
 # shellcheck source=bin/fm-afk-contract.sh
 . "$SCRIPT_DIR/fm-afk-contract.sh"
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/fm-ready-work.sh"
 
 WATCH_LOCK="$STATE/.watch.lock"
 WATCH_PATH="$SCRIPT_DIR/fm-watch.sh"
@@ -2588,6 +2595,29 @@ EOF
     touch "$STATE/.last-check"
     if [ -n "$contribution_check_output" ]; then
       wake "$contribution_check_output"
+    fi
+  fi
+
+  # Queued backlog work that became ready without this home acting: a date gate
+  # passed or its blockers closed. bin/fm-ready-work.sh owns readiness and the
+  # once-per-transition record; this block only enqueues before it commits.
+  # Its own unbacked-off cadence, ahead of the signal scan for the same
+  # starvation reason as the checks above, keeps a due date prompt even while
+  # the heartbeat has backed off on an idle home.
+  if [ "$(age_of "$STATE/.last-ready-scan")" -ge "$HEARTBEAT" ]; then
+    touch "$STATE/.last-ready-scan"
+    if fm_ready_work_scan "$STATE"; then
+      if [ -n "$FM_READY_WORK_NEW" ]; then
+        reason="check: ready-work: $FM_READY_WORK_NEW"
+        if ! fm_wake_append check ready-work "$reason"; then
+          fm_ready_work_release
+          exit 1
+        fi
+        fm_ready_work_commit "$STATE" || triage_log "ready-work record not updated; the next scan repeats this wake"
+        wake "$reason"
+      else
+        fm_ready_work_commit "$STATE" || triage_log "ready-work record not updated"
+      fi
     fi
   fi
 
