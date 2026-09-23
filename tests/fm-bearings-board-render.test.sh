@@ -29,15 +29,19 @@ make_home() {  # <name>
   # The build proves the board session is live before it arms anything, so the
   # stub reports the opened shape the real lavish-axi emits. This suite is about
   # what the template renders, not about session liveness, which
-  # tests/fm-bearings-board.test.sh owns.
+  # tests/fm-bearings-board.test.sh owns. Opening also saves the session to the
+  # Lavish store the real CLI keeps, because the armed listener routes its poll
+  # from that store and exits at once without it - leaving the build to see the
+  # listener live only if it looks inside that brief window.
   cat > "$fakebin/lavish-axi" <<'SH'
 #!/usr/bin/env bash
+url=http://127.0.0.1:14387/session/0123456789abcdef
 case "${1-}" in
   --version) printf '0.1.61\n' ;;
   '')
     printf 'sessions[1]{file,status,url,pending_prompts}:\n'
     [ ! -s "$FM_HOME/lavish-open" ] \
-      || printf '  %s,open,"http://127.0.0.1/session/render",0\n' "$(cat "$FM_HOME/lavish-open")"
+      || printf '  %s,open,"%s",0\n' "$(cat "$FM_HOME/lavish-open")" "$url"
     ;;
   poll)
     # Bounded, so a listener that escapes its test stops on its own.
@@ -47,6 +51,10 @@ case "${1-}" in
   *)
     real=$(cd "$(dirname "$1")" && pwd -P)/$(basename "$1")
     printf '%s\n' "$real" > "$FM_HOME/lavish-open"
+    mkdir -p "$LAVISH_AXI_STATE_DIR"
+    jq -n --arg file "$real" --arg url "$url" \
+      '{sessions:{"0123456789abcdef":{file:$file,url:$url}}}' \
+      > "$LAVISH_AXI_STATE_DIR/state.json"
     printf 'session:\n  status: opened\n'
     ;;
 esac
@@ -68,6 +76,7 @@ render_board() {  # <home> <underway-json> <charted-json> [charted_more] [charte
   PATH="$home/fakebin:$PATH" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROCEVENT_CLAIM_ROOT="$home/procevent-claims" \
+    LAVISH_AXI_STATE_DIR="$home/lavish-state" \
     "$BOARD" build "$data" >/dev/null || fail "the board did not build"
   node "$HARNESS" "$home/.lavish/bearings-board.html" \
     || fail "the built board could not be rendered"
