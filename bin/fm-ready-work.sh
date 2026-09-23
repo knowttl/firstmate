@@ -41,7 +41,7 @@
 #
 # STEPPING ASIDE. tasks-axi missing from PATH, config/backlog-backend=manual, a
 # missing data directory, a markdown home with no backlog file, or a listing that
-# fails, times out (FM_READY_WORK_TIMEOUT seconds, default 10), or cannot be
+# fails, times out after 10 seconds, or cannot be
 # parsed all mean nothing to surface and no need: this backstop never blocks a
 # turn or a teardown on its own failure. The home's data and config directories
 # come from FM_HOME unless FM_DATA_OVERRIDE / FM_CONFIG_OVERRIDE name them.
@@ -163,7 +163,7 @@ fm_ready_work_read() {
   command -v fm_run_timed >/dev/null 2>&1 \
     || . "$FM_READY_WORK_DIR/fm-timeout-lib.sh" || return 1
   listing=$(FM_HOME="$home" FM_DATA_OVERRIDE="$data" \
-    fm_run_timed "${FM_READY_WORK_TIMEOUT:-10}" \
+    fm_run_timed 10 \
     "$FM_READY_WORK_DIR/fm-tasks-axi.sh" list --fields blocked,blocked_by,deps,held,hold_until \
     2>/dev/null </dev/null) || return 1
   classified=$(printf '%s\n' "$listing" | fm_ready_work_classify) || return 1
@@ -194,7 +194,7 @@ fm_ready_work_scan() {
   command -v fm_lock_acquire_wait_bounded >/dev/null 2>&1 \
     || . "$FM_READY_WORK_DIR/fm-wake-lib.sh" || return 1
   FM_READY_WORK_LOCK="$state/.ready-work.lock"
-  fm_lock_acquire_wait_bounded "$FM_READY_WORK_LOCK" "${FM_READY_WORK_TIMEOUT:-10}" || return 1
+  fm_lock_acquire_wait_bounded "$FM_READY_WORK_LOCK" 10 || return 1
   if ! fm_ready_work_read "$state"; then
     fm_ready_work_release
     return 1
