@@ -690,10 +690,11 @@ EOF
   if [ -s "$STATE/.subsuper-escalations" ]; then
     escalations=$(
       while IFS= read -r record || [ -n "$record" ]; do
-        case "$record" in
-          @status-log=*$'\t'*) printf '%s\n' "${record#*$'\t'}" ;;
-          *) printf '%s\n' "$record" ;;
-        esac
+        if [[ $record == @status-log=*$'\t'* ]]; then
+          printf '%s\n' "${record#*$'\t'}"
+        else
+          printf '%s\n' "$record"
+        fi
       done < "$STATE/.subsuper-escalations"
     )
     append_evidence escalation "$escalations" "$evidence"
