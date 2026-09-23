@@ -36,6 +36,13 @@ axi() {  # <home> <tasks-axi args...>
   FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" "$@" >/dev/null || fail "tasks-axi $* failed in $home"
 }
 
+external_axi() {  # <home> <tasks-axi args...>
+  local home=$1
+  shift
+  tasks-axi "$@" --file "$home/data/backlog.md" >/dev/null \
+    || fail "external tasks-axi $* failed in $home"
+}
+
 surface() {  # <home> [env assignments...]
   local home=$1
   shift
@@ -46,7 +53,7 @@ live_gates() {  # <home> [env assignments...]
   local home=$1
   shift
   # shellcheck disable=SC2016 # Positional parameters expand in the child shell.
-  env "$@" bash -c '. "$1"; fm_ready_work_live_gates "$2"' _ "$READY" "$home/state"
+  env FM_HOME="$home" "$@" bash -c '. "$1"; fm_ready_work_live_gates "$2"' _ "$READY" "$home/state"
 }
 
 test_surfaces_once_per_readiness_transition() {
@@ -57,11 +64,10 @@ test_surfaces_once_per_readiness_transition() {
   axi "$home" block dependent --by blocker
   axi "$home" start blocker
   out=$(surface "$home")
-  [ -z "$out" ] || fail "seeding a home with no record surfaced work: $out"
-  [ -e "$home/state/.ready-work-surfaced" ] || fail "the seeding scan left no record"
+  [ -z "$out" ] || fail "blocked work surfaced: $out"
 
   # Closed by hand, not by this home's teardown.
-  axi "$home" "done" blocker
+  external_axi "$home" "done" blocker
   out=$(surface "$home")
   [ "$out" = dependent ] || fail "a blocker closed outside teardown did not surface its dependent: '$out'"
   out=$(surface "$home")
@@ -70,7 +76,7 @@ test_surfaces_once_per_readiness_transition() {
   axi "$home" hold dependent --reason "wait"
   out=$(surface "$home")
   [ -z "$out" ] || fail "re-holding surfaced work: $out"
-  axi "$home" unhold dependent
+  external_axi "$home" unhold dependent
   out=$(surface "$home")
   [ "$out" = dependent ] || fail "released work did not surface as a new transition: '$out'"
 
@@ -98,6 +104,39 @@ test_date_gate_surfaces_when_due() {
   pass "a dated captain hold surfaces once its date arrives and stops needing a watcher"
 }
 
+test_first_scan_and_source_close() {
+  local home out state
+  home=$(make_home first-scan)
+  state="$home/state"
+  axi "$home" add ready "ready from creation"
+  axi "$home" add due "held until today"
+  axi "$home" hold due --reason later --until "$EAST_TODAY"
+  out=$(surface "$home" TZ=$EAST)
+  [ "$out" = due ] || fail "the first scan did not surface an already due gate: '$out'"
+  [ -z "$(surface "$home" TZ=$EAST)" ] || fail "the due gate surfaced twice"
+
+  axi "$home" add blocker "a queued blocker"
+  axi "$home" add dependent "dependent work"
+  axi "$home" block dependent --by blocker
+  axi "$home" done blocker
+  grep -F 'check: ready-work: dependent' "$state/.wake-queue" >/dev/null \
+    || fail "closing a queued blocker did not queue a dependent wake"
+  [ -z "$(surface "$home")" ] || fail "a source wake repeated through the scanner"
+  pass "a first due scan surfaces its gate and a queued close wakes its dependent"
+}
+
+test_alternate_state_keeps_home_backlog() {
+  local home state out
+  home=$(make_home alternate-state)
+  state="$home/other-state"
+  mkdir -p "$state"
+  axi "$home" add due "held until today"
+  axi "$home" hold due --reason later --until "$EAST_TODAY"
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$state" TZ=$EAST "$READY" surface)
+  [ "$out" = due ] || fail "alternate state read the wrong backlog: '$out'"
+  pass "an alternate state directory still reads the configured home backlog"
+}
+
 test_live_gates_are_bounded() {
   local home
   home=$(make_home undated)
@@ -113,7 +152,7 @@ test_live_gates_are_bounded() {
   (
     # shellcheck source=/dev/null
     . "$ROOT/bin/fm-supervision-lib.sh"
-    if fm_supervision_needed "$home/state" 300; then
+    if FM_HOME="$home" fm_supervision_needed "$home/state" 300; then
       fail "a home with only undated holds gained a watcher need"
     fi
   ) || exit 1
@@ -132,7 +171,7 @@ test_live_gates_are_bounded() {
   (
     # shellcheck source=/dev/null
     . "$ROOT/bin/fm-supervision-lib.sh"
-    TZ=$WEST fm_supervision_needed "$home/state" 300 \
+    FM_HOME="$home" TZ=$WEST fm_supervision_needed "$home/state" 300 \
       || fail "live-gated queued work did not need supervision"
     [ "$FM_SUP_GATED" = 3 ] || fail "FM_SUP_GATED reported $FM_SUP_GATED"
   ) || exit 1
@@ -154,10 +193,11 @@ test_watcher_wakes_once_for_a_cleared_blocker() {
   axi "$dir" block dependent --by blocker
   axi "$dir" start blocker
   [ -z "$(surface "$dir")" ] || fail "seeding surfaced work"
-  axi "$dir" "done" blocker
+  external_axi "$dir" "done" blocker
+  [ ! -s "$state/.wake-queue" ] || fail "setup queued a wake before the watcher: $(cat "$state/.wake-queue"); $(FM_HOME="$dir" "$ROOT/bin/fm-tasks-axi.sh" list --fields blocked,blocked_by,held,hold_until)"
 
-  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 \
-    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_READY_SCAN=1 "$WATCH" > "$out" &
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   wait_for_exit "$pid" 100 || { reap "$pid"; fail "the watcher did not wake for newly ready work"; }
   grep -Fx 'check: ready-work: dependent' "$out" >/dev/null \
@@ -167,8 +207,8 @@ test_watcher_wakes_once_for_a_cleared_blocker() {
 
   ack_handled_wakes "$state" || fail "the ready-work wake could not be drained and acknowledged"
   : > "$out"
-  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 \
-    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_READY_SCAN=1 "$WATCH" > "$out" &
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   rm -f "$state/.last-ready-scan"
   wait_live "$pid" 40 || fail "the watcher woke again for already surfaced work: $(cat "$out")"
@@ -206,5 +246,7 @@ wait_live() {  # <pid> [ticks]
 
 test_surfaces_once_per_readiness_transition
 test_date_gate_surfaces_when_due
+test_first_scan_and_source_close
+test_alternate_state_keeps_home_backlog
 test_live_gates_are_bounded
 test_watcher_wakes_once_for_a_cleared_blocker

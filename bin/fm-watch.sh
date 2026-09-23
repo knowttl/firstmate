@@ -236,7 +236,6 @@ POLL=${FM_POLL:-15}                   # seconds between cycles
 WATCHER_STALE_GRACE=${FM_WATCHER_STALE_GRACE:-${FM_GUARD_GRACE:-$(fm_poll_derived_grace "$POLL")}}
 HEARTBEAT=${FM_HEARTBEAT:-600}        # base seconds between heartbeat scans
 HEARTBEAT_MAX=${FM_HEARTBEAT_MAX:-7200}  # heartbeat backoff cap
-READY_SCAN=${FM_READY_SCAN:-$HEARTBEAT}  # seconds between ready-work scans, never backed off
 CHECK_INTERVAL=${FM_CHECK_INTERVAL:-300}  # seconds between *.check.sh sweeps
 CHECK_TIMEOUT=${FM_CHECK_TIMEOUT:-30}     # seconds allowed per *.check.sh
 HOME_SUMMARY_INTERVAL=${FM_HOME_SUMMARY_INTERVAL:-300}
@@ -2503,7 +2502,7 @@ EOF
   # Its own unbacked-off cadence, ahead of the signal scan for the same
   # starvation reason as the checks above, keeps a due date prompt even while
   # the heartbeat has backed off on an idle home.
-  if [ "$(age_of "$STATE/.last-ready-scan")" -ge "$READY_SCAN" ]; then
+  if [ "$(age_of "$STATE/.last-ready-scan")" -ge "$HEARTBEAT" ]; then
     touch "$STATE/.last-ready-scan"
     if fm_ready_work_scan "$STATE"; then
       if [ -n "$FM_READY_WORK_NEW" ]; then

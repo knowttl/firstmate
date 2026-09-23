@@ -338,16 +338,23 @@ load_decision() {  # <path>; sets DECISION_TEXT and DECISION_DIGEST
 # the root's own tasks-axi configuration, exactly like the transition library's
 # mutate path.
 tasks_axi() {
-  local data file root backend
+  local data file root backend status=0
   data=$(fm_backlog_data_absolute "$DATA") || fail "data directory cannot be resolved: $DATA"
   root=$(fm_backlog_root "$data") || fail "$FM_BACKLOG_TRANSITION_ERROR"
   backend=$(fm_tasks_axi_backend "$root") || return 2
   if [ "$backend" = markdown ]; then
     file=$(fm_backlog_file "$data") || fail "$FM_BACKLOG_TRANSITION_ERROR"
-    (cd "$root" && tasks-axi "$@" --file "$file")
+    (cd "$root" && tasks-axi "$@" --file "$file") || status=$?
   else
-    (cd "$root" && tasks-axi "$@")
+    (cd "$root" && tasks-axi "$@") || status=$?
   fi
+  [ "$status" -eq 0 ] || return "$status"
+  case "$1" in
+    done|unhold|hold|block|unblock|start)
+      FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+        "$SCRIPT_DIR/fm-ready-work.sh" wake || true
+      ;;
+  esac
 }
 
 require_tasks_axi() {

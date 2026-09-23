@@ -3,12 +3,9 @@
 # became dispatchable without this home acting, and report whether gated queued
 # work still needs a watcher to notice it.
 #
-# Usage: fm-ready-work.sh surface
-#   Print, on one line, the queued task ids that became ready since they were
-#   last surfaced (nothing when none did), and record them as surfaced.
-#   bin/fm-teardown.sh runs it right after closing its task, so the dependents
-#   that close unblocked are named in its own output instead of arriving later
-#   as a separate wake.
+# Usage: fm-ready-work.sh surface|wake
+#   Surface queued task ids released by a date or blocker gate since the last
+#   delivery; wake appends them to the durable wake queue.
 # Sourced (. bin/fm-ready-work.sh): fm_ready_work_scan, fm_ready_work_commit,
 # fm_ready_work_release (bin/fm-watch.sh), and fm_ready_work_live_gates
 # (bin/fm-supervision-lib.sh).
@@ -16,7 +13,7 @@
 # WHY. Queued work gated on a date (`tasks-axi hold --until`, including captain
 # holds deferred with bin/fm-captain-hold.sh --until) or on blockers can become
 # ready without any turn in this home: a date passes, or a blocker is closed by a
-# captain answer, a hand-run `tasks-axi done`, or work elsewhere. Teardown and
+# captain answer, a hand-run backlog close, or work elsewhere. Teardown and
 # session start re-evaluate the queue, but nothing else did, so such work waited
 # for the next unrelated teardown or session start.
 #
@@ -26,16 +23,12 @@
 # not blocked, not held, and not a public-followup obligation, which is never
 # dispatchable - the same set `tasks-axi ready` lists.
 #
-# ONCE PER TRANSITION. state/.ready-work-surfaced lists the ready ids already
-# surfaced. A scan reports the ready ids missing from it; the caller commits the
-# current ready set as the new record only after it has enqueued its wake
-# (enqueue before suppress), so a crash in between repeats the wake rather than
-# losing it. An id leaves the record when it is dispatched, closed, or re-held,
-# so its next readiness is new again. An item filed already ready is surfaced
-# once too, unless it is dispatched before the next scan. A home with no record
-# yet seeds it silently, so the first scan never replays the whole ready queue.
-# state/.ready-work.lock serializes scan-to-commit between the watcher and
-# teardown, so one transition is reported by exactly one of them.
+# ONCE PER TRANSITION. state/.ready-work-surfaced lists gated ready ids already
+# surfaced. A scan reports gated ready ids missing from it; the caller commits
+# the current gated ready set only after delivery. An id leaves the record when
+# it is dispatched, closed, or re-held, so its next readiness is new again.
+# state/.ready-work.lock serializes scan-to-commit across callers, so one
+# transition is reported by exactly one of them.
 #
 # LIVE GATES (supervision need). A queued item's gate is live when it can clear
 # without this home acting: a hold with a future date, or a blocker that is in
@@ -50,16 +43,15 @@
 # fails, times out (FM_READY_WORK_TIMEOUT seconds, default 10), or cannot be
 # parsed all mean nothing to surface and no need: this backstop never blocks a
 # turn or a teardown on its own failure. The home's data and config directories
-# are the state directory's siblings unless FM_DATA_OVERRIDE / FM_CONFIG_OVERRIDE
-# name them.
+# come from FM_HOME unless FM_DATA_OVERRIDE / FM_CONFIG_OVERRIDE name them.
 
 FM_READY_WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FM_READY_WORK_READY=
+FM_READY_WORK_ELIGIBLE=
 FM_READY_WORK_LIVE=0
 FM_READY_WORK_NEW=
 FM_READY_WORK_LOCK=
 
-# Classify one `tasks-axi list` listing. Prints `ready <id>` per ready item and
+# Classify one `tasks-axi list` listing. Prints `eligible <id>` per gated ready item and
 # a final `live <count>`; exits 2 when the listing lacks the expected table.
 fm_ready_work_classify() {
   LC_ALL=C awk '
@@ -103,18 +95,22 @@ fm_ready_work_classify() {
       blocked[id] = f[col["blocked"]]
       held[id] = f[col["held"]]
       until[id] = f[col["hold_until"]]
-      deps[id] = f[col["blocked_by"]]
+      blockers[id] = f[col["blocked_by"]]
+      deps[id] = f[col["deps"]]
       next
     }
     { rows = 0 }
     END {
       if (!table) exit 2
       if (n > 0 && !("id" in col && "state" in col && "kind" in col && "blocked" in col \
-          && "blocked_by" in col && "held" in col && "hold_until" in col)) exit 2
+          && "blocked_by" in col && "deps" in col && "held" in col && "hold_until" in col)) exit 2
       for (i = 1; i <= n; i++) {
         id = ids[i]
         if (state[id] != "queued" || kind[id] == "public-followup") continue
-        if (blocked[id] == "no" && held[id] == "no") print "ready " id
+        if (blocked[id] == "no" && held[id] == "no") {
+          if (deps[id] != "none" && deps[id] != "-" && deps[id] != "" \
+              || until[id] != "-" && until[id] != "") print "eligible " id
+        }
         if (held[id] == "yes" && until[id] != "-" && until[id] != "") live[id] = 1
       }
       # A blocked item is live when any open blocker is in flight or live itself;
@@ -126,7 +122,7 @@ fm_ready_work_classify() {
           id = ids[i]
           if (state[id] != "queued" || live[id] || blocked[id] != "yes") continue
           if (held[id] == "yes" && (until[id] == "-" || until[id] == "")) continue
-          m = split(deps[id], bs, ",")
+          m = split(blockers[id], bs, ",")
           for (j = 1; j <= m; j++) {
             b = bs[j]
             if (state[b] == "in_flight" || live[b]) { live[id] = 1; changed = 1; break }
@@ -141,14 +137,14 @@ fm_ready_work_classify() {
 }
 
 # fm_ready_work_read <state-dir>
-# Sets FM_READY_WORK_READY (sorted ready ids, one per line) and
+# Sets FM_READY_WORK_ELIGIBLE (sorted gated ready ids, one per line) and
 # FM_READY_WORK_LIVE (live-gated queued count). Returns 0 on a good read, 1 when
 # this home has no readable tasks-axi backlog (see STEPPING ASIDE).
 fm_ready_work_read() {
   local state=$1 home data config root backend listing classified
-  FM_READY_WORK_READY=
+  FM_READY_WORK_ELIGIBLE=
   FM_READY_WORK_LIVE=0
-  home=${state%/*}
+  home=${FM_HOME:-${FM_ROOT_OVERRIDE:-$(cd "$FM_READY_WORK_DIR/.." && pwd)}}
   data=${FM_DATA_OVERRIDE:-$home/data}
   config=${FM_CONFIG_OVERRIDE:-$home/config}
   [ -d "$data" ] || return 1
@@ -167,10 +163,10 @@ fm_ready_work_read() {
     || . "$FM_READY_WORK_DIR/fm-timeout-lib.sh" || return 1
   listing=$(FM_HOME="$home" FM_DATA_OVERRIDE="$data" \
     fm_run_timed "${FM_READY_WORK_TIMEOUT:-10}" \
-    "$FM_READY_WORK_DIR/fm-tasks-axi.sh" list --fields blocked,blocked_by,held,hold_until \
+    "$FM_READY_WORK_DIR/fm-tasks-axi.sh" list --fields blocked,blocked_by,deps,held,hold_until \
     2>/dev/null </dev/null) || return 1
   classified=$(printf '%s\n' "$listing" | fm_ready_work_classify) || return 1
-  FM_READY_WORK_READY=$(printf '%s\n' "$classified" | sed -n 's/^ready //p' | LC_ALL=C sort -u)
+  FM_READY_WORK_ELIGIBLE=$(printf '%s\n' "$classified" | sed -n 's/^eligible //p' | LC_ALL=C sort -u)
   FM_READY_WORK_LIVE=$(printf '%s\n' "$classified" | sed -n 's/^live //p')
   case "$FM_READY_WORK_LIVE" in ''|*[!0-9]*) FM_READY_WORK_LIVE=0; return 1 ;; esac
   return 0
@@ -187,8 +183,7 @@ fm_ready_work_live_gates() {
 
 # fm_ready_work_scan <state-dir>
 # Takes state/.ready-work.lock, reads the backlog, and sets FM_READY_WORK_NEW to
-# the space-separated ready ids not yet surfaced (empty while seeding a home
-# with no record). Returns 0 with the lock held, to be finished by
+# the space-separated gated ready ids not yet surfaced. Returns 0 with the lock held, to be finished by
 # fm_ready_work_commit; returns 1 with no lock held when there is nothing to
 # read or the lock stays contended.
 fm_ready_work_scan() {
@@ -204,22 +199,22 @@ fm_ready_work_scan() {
     return 1
   fi
   record="$state/.ready-work-surfaced"
-  [ -e "$record" ] || return 0
-  FM_READY_WORK_NEW=$(printf '%s\n' "$FM_READY_WORK_READY" | LC_ALL=C awk '
+  [ -e "$record" ] || record=/dev/null
+  FM_READY_WORK_NEW=$(printf '%s\n' "$FM_READY_WORK_ELIGIBLE" | LC_ALL=C awk '
     FILENAME == ARGV[1] { if ($0 != "") seen[$0] = 1; next }
     $0 != "" && !($0 in seen) { printf "%s%s", sep, $0; sep = " " }
   ' "$record" -)
   return 0
 }
 
-# fm_ready_work_commit <state-dir>: record the scanned ready set as surfaced and
+# fm_ready_work_commit <state-dir>: record the scanned gated ready set as surfaced and
 # release the scan lock.
 fm_ready_work_commit() {
   local state=$1 record tmp status=0
   record="$state/.ready-work-surfaced"
   if tmp=$(mktemp "$state/.ready-work-surfaced.XXXXXX"); then
-    if [ -n "$FM_READY_WORK_READY" ]; then
-      printf '%s\n' "$FM_READY_WORK_READY" > "$tmp" || status=1
+    if [ -n "$FM_READY_WORK_ELIGIBLE" ]; then
+      printf '%s\n' "$FM_READY_WORK_ELIGIBLE" > "$tmp" || status=1
     fi
     if [ "$status" -eq 0 ]; then
       mv -f -- "$tmp" "$record" || status=1
@@ -239,22 +234,35 @@ fm_ready_work_release() {
 }
 
 fm_ready_work_main() {
-  local state
+  local state mode
   case "${1:-}" in
-    surface) ;;
+    surface|wake) mode=$1 ;;
     -h|--help)
       awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
       return 0
       ;;
     *)
-      printf 'usage: fm-ready-work.sh surface\n' >&2
+      printf 'usage: fm-ready-work.sh surface|wake\n' >&2
       return 2
       ;;
   esac
   state=${FM_STATE_OVERRIDE:-${FM_HOME:-$(cd "$FM_READY_WORK_DIR/.." && pwd)}/state}
   fm_ready_work_scan "$state" || return 0
-  fm_ready_work_commit "$state" || return 0
-  [ -z "$FM_READY_WORK_NEW" ] || printf '%s\n' "$FM_READY_WORK_NEW"
+  if [ -n "$FM_READY_WORK_NEW" ]; then
+    if [ "$mode" = wake ]; then
+      . "$FM_READY_WORK_DIR/fm-wake-lib.sh"
+      fm_wake_append check ready-work "check: ready-work: $FM_READY_WORK_NEW" || {
+        fm_ready_work_release
+        return 1
+      }
+    else
+      printf '%s\n' "$FM_READY_WORK_NEW" || {
+        fm_ready_work_release
+        return 1
+      }
+    fi
+  fi
+  fm_ready_work_commit "$state"
 }
 
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
