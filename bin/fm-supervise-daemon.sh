@@ -9,8 +9,7 @@
 # token-efficient replacement for the prior always-inject daemon: routine
 # signal/stale/heartbeat wakes cost zero firstmate context; only done/
 # needs-decision/blocked/failed/persistent-wedge/check-output events and a
-# declared-wait recheck reach the LLM, and even then as one pre-read digest per
-# batch window.
+# declared-wait recheck reach the LLM, and even then as bounded pre-read digests.
 #
 # PRESENCE-GATING (the /afk contract). The daemon is the away-mode engine: it
 # injects ONLY when the durable away-mode flag state/.afk is present. Invoking
@@ -478,7 +477,8 @@ classify_unknown() {  # <reason>
 
 # --- stale marker + escalation buffer (stateful, but via explicit state dir) -
 # Marker:   state/.subsuper-stale-<key>   contains the epoch first seen idle.
-# Buffer:   state/.subsuper-escalations    one distilled line per escalation.
+# Buffer:   state/.subsuper-escalations    one distilled line per event; records
+#           with a source log carry @status-log=<source path><TAB> before the text.
 # Seen:     state/.subsuper-seen-status-<task>  last reported file signature and
 #           classified byte offset, so failures and events do not re-fire while
 #           unread bytes remain recoverable.
