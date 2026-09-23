@@ -1447,7 +1447,7 @@ test_escalate_flush_bounds_each_digest() {
   mid=$(head -c 20000 /dev/zero | tr '\0' 'y')
   escalate_add "$state" "event A: done: PR 1"
   escalate_add "$state" "event B: done: PR 2"
-  escalate_add "$state" "big-t1.status: done: $big | mid-t2.status: done: $mid"
+  escalate_add "$state" "big-t1.status: done: $big | extra context | mid-t2.status: done: $mid"
   escalate_add "$state" "event C: done: PR 3"
   [ "$(wc -l < "$state/.subsuper-escalations")" -eq 5 ] \
     || fail "combined signal did not preserve each task as a separate buffered item"
@@ -1466,6 +1466,7 @@ test_escalate_flush_bounds_each_digest() {
     || fail "first bounded flush failed"
   grep -F 'event A: done: PR 1 | event B: done: PR 2' "$sent" >/dev/null \
     || fail "first batch did not carry the oldest items in order"
+  grep -F 'more queued' "$sent" >/dev/null && fail "digest announced an unrequested queued count"
   [ -s "$state/.subsuper-escalations" ] || fail "partial flush dropped the queued remainder"
   [ -e "$state/.subsuper-escalations.since" ] || fail "partial flush dropped the remainder's first-append sidecar"
 
@@ -1489,6 +1490,38 @@ test_escalate_flush_bounds_each_digest() {
     [ "$bytes" -le "$INJECT_MAX_BYTES" ] || fail "a typed digest was $bytes bytes, over the $INJECT_MAX_BYTES-byte budget"
   done < "$sent"
   pass "an oversized escalation buffer drains in bounded batches and truncates an oversized item"
+}
+
+test_stale_actionable_status_truncation_keeps_log_pointer() {
+  local dir state fakebin sent capture big line bytes
+  dir=$(make_supercase stale-bounded)
+  state="$dir/state"; fakebin="$dir/fakebin"
+  sent="$dir/sent.log"; : > "$sent"
+  capture="$dir/pane.txt"; printf '\342\235\257 \n' > "$capture"
+  big=$(head -c 2000 /dev/zero | tr '\0' 'z')
+  printf 'blocked [key=approval]: %s\n' "$big" > "$state/stale-t1.status"
+  FM_ESCALATE_BATCH_SECS=999 handle_wake 'stale: sess:fm-stale-t1' "$state"
+  line=$(cat "$state/.subsuper-escalations")
+  bytes=$(LC_ALL=C; printf '%s' "${#line}")
+  [ "$bytes" -le "$ESCALATION_ITEM_MAX_BYTES" ] || fail "stale status was not capped when buffered"
+  case "$line" in
+    *"full text in $state/stale-t1.status]"*) ;;
+    *) fail "stale status lost its log pointer when buffered" ;;
+  esac
+  afk_enter "$state"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_PANE_ALIVE=1 FM_FAKE_TMUX_SENT="$sent" \
+    FM_FAKE_TMUX_CAPTURE="$capture" escalate_flush "$state" \
+    || fail "stale status flush failed"
+  grep -F "full text in $state/stale-t1.status]" "$sent" >/dev/null \
+    || fail "stale status lost its log pointer during flush"
+  printf 'stale-t1.status: stale + actionable status: blocked [key=approval]: %s\n' "$big" \
+    >> "$state/.subsuper-escalations"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_PANE_ALIVE=1 FM_FAKE_TMUX_SENT="$sent" \
+    FM_FAKE_TMUX_CAPTURE="$capture" escalate_flush "$state" \
+    || fail "older oversized stale status flush failed"
+  [ "$(grep -Fc "full text in $state/stale-t1.status]" "$sent")" -eq 2 ] \
+    || fail "flush-time truncation lost the stale status log pointer"
+  pass "stale actionable status keeps its recovery log through buffering and delivery"
 }
 
 test_escalate_flush_truncates_on_a_character_boundary() {
@@ -2904,6 +2937,7 @@ test_housekeeping_herdr_resumed_stale_cleared
 test_housekeeping_orca_persistent_stale_resolves_terminal
 test_escalate_batches_into_one_digest
 test_escalate_flush_bounds_each_digest
+test_stale_actionable_status_truncation_keeps_log_pointer
 test_escalate_flush_truncates_on_a_character_boundary
 test_escalate_flush_send_refusal_is_logged_honestly
 test_escalate_batch_age_uses_first_append

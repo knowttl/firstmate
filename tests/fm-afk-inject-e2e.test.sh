@@ -437,7 +437,7 @@ test_scenario_d() {
   big=$(head -c 150000 /dev/zero | tr '\0' 'x')
   mid=$(head -c 20000 /dev/zero | tr '\0' 'y')
   escalate_add "$STATE_DIR" "event A: done: PR https://example.test/pr/401"
-  escalate_add "$STATE_DIR" "big-d1.status: done: $big | mid-d2.status: done: $mid"
+  escalate_add "$STATE_DIR" "big-d1.status: done: $big | extra context | mid-d2.status: done: $mid"
   escalate_add "$STATE_DIR" "event B: done: PR https://example.test/pr/402"
   afk_enter "$STATE_DIR"
   start_daemon
@@ -452,6 +452,7 @@ test_scenario_d() {
 
   injections=$(grep -c $'\tinjection$' "$LOG_FILE" || true)
   [ "$injections" -ge 2 ] || fail "Scenario D: expected multiple bounded digests, got $injections"
+  grep -F 'more queued' "$LOG_FILE" >/dev/null && fail "Scenario D: digest announced a queued count"
   while IFS= read -r line; do
     text=$(printf '%s' "$line" | cut -f2)
     bytes=$(LC_ALL=C; printf '%s' "${#text}")

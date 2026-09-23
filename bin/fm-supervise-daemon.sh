@@ -423,7 +423,7 @@ classify_stale() {  # <window> <state> [<span-record> <span-status>]
   if [ "$rc" -eq 0 ]; then
     rest=${record#*$'\t'}
     event=${rest#*$'\t'}
-    printf 'escalate|stale + actionable status: %s' "$event"
+    printf 'escalate|%s.status: stale + actionable status: %s' "$task" "$event"
     return
   fi
   if [ -n "$last" ] && status_is_paused_or_captain_held "$last"; then
@@ -695,16 +695,23 @@ stale_window_is_busy() {  # <window> <state>
 }
 
 escalate_add() {  # <state> <distilled-item>
-  local state=$1 item=$2 buf part rest over
+  local state=$1 item=$2 buf part rest next over
   buf="$state/.subsuper-escalations"
   [ -s "$buf" ] || _now > "${buf}.since"
   while :; do
-    rest=${item#* | }
-    if [ "$rest" != "$item" ] && [[ $rest =~ ^[A-Za-z0-9._-]+\.status:\  ]]; then
-      part=${item%% | *}
-      item=$rest
-    else
-      part=$item
+    part=
+    rest=$item
+    while [ "$rest" != "${rest#* | }" ]; do
+      next=${rest#* | }
+      part=${part:+$part | }${rest%% | *}
+      if [[ $next =~ ^[A-Za-z0-9._-]+\.status:\  ]]; then
+        item=$next
+        break
+      fi
+      rest=$next
+    done
+    if [ "$rest" = "${rest#* | }" ]; then
+      part=${part:+$part | }$rest
       item=
     fi
     over=$(( $(_byte_len "$part") - ESCALATION_ITEM_MAX_BYTES ))
@@ -773,10 +780,8 @@ _escalation_item_truncate() (  # <item> <over-bytes> <state>
   printf '%s ... [+%s bytes truncated%s]' "$head" "$(( ${#item} - ${#head} ))" "$source"
 )
 
-_escalation_digest() {  # <count> <queued> <joined-items>
-  local more=''
-  [ "$2" -le 0 ] || more=", $2 more queued"
-  printf 'Supervisor escalate (%s event(s)%s): %s (pre-read; re-arm not needed — watcher daemon-managed)' "$1" "$more" "$3"
+_escalation_digest() {  # <count> <joined-items>
+  printf 'Supervisor escalate (%s event(s)): %s (pre-read; re-arm not needed — watcher daemon-managed)' "$1" "$2"
 }
 
 # Flush the oldest buffered escalations that fit one inject as a single-line
@@ -785,23 +790,21 @@ _escalation_digest() {  # <count> <queued> <joined-items>
 # inject (or empty buffer) after removing only the delivered lines, non-zero on
 # inject failure (buffer preserved for retry / catch-up).
 escalate_flush() {  # <state>
-  local state=$1 buf budget total envelope envelope_bytes item joined='' try msg='' over taken=0
+  local state=$1 buf budget envelope envelope_bytes item joined='' try msg='' over taken=0
   buf="$state/.subsuper-escalations"
   [ -s "$buf" ] || return 0
   [ -f "$buf" ] || return 1
   budget=$INJECT_MAX_BYTES
-  total=$(wc -l < "$buf" 2>/dev/null) || total=0
-  total=${total//[!0-9]/}
   # inject_msg wraps the digest in the typed envelope, which counts too.
   fm_operational_input_encode away-supervisor x envelope || return 1
   envelope_bytes=$(( $(_byte_len "$envelope") - 1 ))
   while IFS= read -r item || [ -n "$item" ]; do
-    try=$(_escalation_digest "$((taken + 1))" "$((total - taken - 1))" "${joined:+$joined | }$item")
+    try=$(_escalation_digest "$((taken + 1))" "${joined:+$joined | }$item")
     over=$(( envelope_bytes + $(_byte_len "$try") - budget ))
     if [ "$over" -gt 0 ]; then
       [ "$taken" -eq 0 ] || break
       item=$(_escalation_item_truncate "$item" "$over" "$state")
-      try=$(_escalation_digest 1 "$((total - 1))" "$item")
+      try=$(_escalation_digest 1 "$item")
     fi
     # Join items with the literal " | " separator into one digest line.
     joined=${joined:+$joined | }$item
