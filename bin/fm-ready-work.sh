@@ -250,7 +250,6 @@ fm_ready_work_main() {
   state=${FM_STATE_OVERRIDE:-${FM_HOME:-$(cd "$FM_READY_WORK_DIR/.." && pwd)}/state}
   fm_ready_work_scan "$state" || return 0
   if [ -n "$FM_READY_WORK_NEW" ]; then
-    . "$FM_READY_WORK_DIR/fm-wake-lib.sh"
     fm_wake_append check ready-work "check: ready-work: $FM_READY_WORK_NEW" || {
       fm_ready_work_release
       return 1

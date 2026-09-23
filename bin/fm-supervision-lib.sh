@@ -12,7 +12,7 @@
 # live watcher process means per supervision model. The status fields here retain
 # the beacon-age details used in their messages.
 
-# shellcheck source=bin/fm-ready-work.sh
+# shellcheck source=/dev/null
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-ready-work.sh"
 
 # Portable mtime; Linux stat lacks -f, macOS stat lacks -c.

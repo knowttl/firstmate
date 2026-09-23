@@ -193,7 +193,7 @@ mkdir -p "$STATE"
 # watcher reads only its presence (afk_record_present below).
 # shellcheck source=bin/fm-afk-contract.sh
 . "$SCRIPT_DIR/fm-afk-contract.sh"
-# shellcheck source=bin/fm-ready-work.sh
+# shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-ready-work.sh"
 
 WATCH_LOCK="$STATE/.watch.lock"
