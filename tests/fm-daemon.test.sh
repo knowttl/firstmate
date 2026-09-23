@@ -1445,6 +1445,8 @@ test_escalate_flush_bounds_each_digest() {
   capture="$dir/pane.txt"; printf '\342\235\257 \n' > "$capture"
   big=$(head -c 200000 /dev/zero | tr '\0' 'x')
   mid=$(head -c 20000 /dev/zero | tr '\0' 'y')
+  : > "$state/big-t1.status"
+  : > "$state/mid-t2.status"
   escalate_add "$state" "event A: done: PR 1"
   escalate_add "$state" "event B: done: PR 2"
   escalate_add "$state" "big-t1.status: done: $big | extra context | mid-t2.status: done: $mid"
@@ -1490,6 +1492,65 @@ test_escalate_flush_bounds_each_digest() {
     [ "$bytes" -le "$INJECT_MAX_BYTES" ] || fail "a typed digest was $bytes bytes, over the $INJECT_MAX_BYTES-byte budget"
   done < "$sent"
   pass "an oversized escalation buffer drains in bounded batches and truncates an oversized item"
+}
+
+test_escalate_add_ignores_false_status_boundaries() {
+  local dir state big line
+  dir=$(make_supercase false-status-boundary)
+  state="$dir/state"
+  big=$(head -c 2000 /dev/zero | tr '\0' 'z')
+  : > "$state/real.status"
+  escalate_add "$state" "real.status: needs-decision: choose | missing.status: $big"
+  [ "$(wc -l < "$state/.subsuper-escalations")" -eq 1 ] \
+    || fail "status text naming a missing file was split into another event"
+  line=$(cat "$state/.subsuper-escalations")
+  case "$line" in
+    *"full text in $state/real.status]"*) ;;
+    *) fail "real status lost its recovery pointer" ;;
+  esac
+  case "$line" in
+    *"full text in $state/missing.status]"*) fail "truncation pointed to a nonexistent status log" ;;
+  esac
+  escalate_add "$state" "missing.status: $big"
+  line=$(tail -1 "$state/.subsuper-escalations")
+  case "$line" in
+    *"full text in $state/missing.status]"*) fail "missing status received a recovery pointer" ;;
+  esac
+  pass "status text cannot create a task boundary or a nonexistent log pointer"
+}
+
+test_escalate_flush_reports_buffer_update_failure() {
+  local failure dir state fakebin sent capture
+  for failure in copy replacement; do
+    dir=$(make_supercase "buffer-update-$failure")
+    state="$dir/state"; fakebin="$dir/fakebin"
+    sent="$dir/sent.log"; : > "$sent"
+    capture="$dir/pane.txt"; printf '\342\235\257 \n' > "$capture"
+    escalate_add "$state" "needs-decision: pick A"
+    afk_enter "$state"
+    (
+      tail() {
+        if [ "$failure" = copy ] && [ "${1:-}" = -n ] && [ "${2:-}" = +2 ]; then return 1; fi
+        command tail "$@"
+      }
+      mv() {
+        if [ "$failure" = replacement ] && [ "${3:-}" = "$state/.subsuper-escalations" ]; then return 1; fi
+        command mv "$@"
+      }
+      if PATH="$fakebin:$PATH" FM_FAKE_TMUX_PANE_ALIVE=1 FM_FAKE_TMUX_SENT="$sent" \
+        FM_FAKE_TMUX_CAPTURE="$capture" LOG="$dir/daemon.log" escalate_flush "$state"; then
+        exit 1
+      fi
+    ) || fail "flush returned success after $failure failure"
+    grep -F "needs-decision: pick A" "$sent" >/dev/null \
+      || fail "digest was not delivered before $failure failure"
+    grep -F "escalation buffer update failed: remainder $failure" "$dir/daemon.log" >/dev/null \
+      || fail "$failure failure was not logged"
+    grep -Fx "needs-decision: pick A" "$state/.subsuper-escalations" >/dev/null \
+      || fail "$failure failure discarded the original escalation buffer"
+    [ ! -e "$state/.subsuper-escalations.tmp" ] || fail "$failure failure left a partial remainder file"
+  done
+  pass "confirmed delivery reports copy and replacement failures"
 }
 
 test_stale_actionable_status_truncation_keeps_log_pointer() {
@@ -2937,6 +2998,8 @@ test_housekeeping_herdr_resumed_stale_cleared
 test_housekeeping_orca_persistent_stale_resolves_terminal
 test_escalate_batches_into_one_digest
 test_escalate_flush_bounds_each_digest
+test_escalate_add_ignores_false_status_boundaries
+test_escalate_flush_reports_buffer_update_failure
 test_stale_actionable_status_truncation_keeps_log_pointer
 test_escalate_flush_truncates_on_a_character_boundary
 test_escalate_flush_send_refusal_is_logged_honestly

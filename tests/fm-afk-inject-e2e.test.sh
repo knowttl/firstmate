@@ -436,6 +436,8 @@ test_scenario_d() {
   reset_state
   big=$(head -c 150000 /dev/zero | tr '\0' 'x')
   mid=$(head -c 20000 /dev/zero | tr '\0' 'y')
+  : > "$STATE_DIR/big-d1.status"
+  : > "$STATE_DIR/mid-d2.status"
   escalate_add "$STATE_DIR" "event A: done: PR https://example.test/pr/401"
   escalate_add "$STATE_DIR" "big-d1.status: done: $big | extra context | mid-d2.status: done: $mid"
   escalate_add "$STATE_DIR" "event B: done: PR https://example.test/pr/402"

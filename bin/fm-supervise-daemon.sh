@@ -704,7 +704,7 @@ escalate_add() {  # <state> <distilled-item>
     while [ "$rest" != "${rest#* | }" ]; do
       next=${rest#* | }
       part=${part:+$part | }${rest%% | *}
-      if [[ $next =~ ^[A-Za-z0-9._-]+\.status:\  ]]; then
+      if [[ $next =~ ^([A-Za-z0-9._-]+)\.status:\  ]] && [ -f "$state/${BASH_REMATCH[1]}.status" ]; then
         item=$next
         break
       fi
@@ -769,7 +769,7 @@ _escalation_item_truncate() (  # <item> <over-bytes> <state>
   case "$item" in
     *.status:\ *)
       name=${item%%.status: *}
-      case "$name" in ''|*[!A-Za-z0-9._-]*) ;; *) source="; full text in $state/$name.status" ;; esac ;;
+      case "$name" in ''|*[!A-Za-z0-9._-]*) ;; *) [ ! -f "$state/$name.status" ] || source="; full text in $state/$name.status" ;; esac ;;
   esac
   # The marker is sized with the item's full length, which bounds the digits of
   # the count actually dropped.
@@ -812,10 +812,15 @@ escalate_flush() {  # <state>
     taken=$((taken + 1))
   done < "$buf"
   inject_msg "$msg" "$state" || return 1
-  if tail -n +"$((taken + 1))" "$buf" > "${buf}.tmp" 2>/dev/null; then
-    mv -f "${buf}.tmp" "$buf"
-  else
+  if ! tail -n +"$((taken + 1))" "$buf" > "${buf}.tmp" 2>/dev/null; then
     rm -f "${buf}.tmp"
+    log "inject delivered but escalation buffer update failed: remainder copy"
+    return 1
+  fi
+  if ! mv -f "${buf}.tmp" "$buf"; then
+    rm -f "${buf}.tmp"
+    log "inject delivered but escalation buffer update failed: remainder replacement"
+    return 1
   fi
   # Delivery works again, so the max-defer clock restarts for any remainder and
   # the next batch goes after the normal batch window.
