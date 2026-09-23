@@ -82,6 +82,17 @@
 # it to stop itself once its root is pruned, and
 # bin/fm-remote-job-reap-orphans.sh uses it to reap workers that were already
 # orphaned that way.
+#
+# fm_remote_job_process_start is the one process-identity reader behind the
+# worker lock, staging, and claim start records. Where /proc/<pid>/stat is
+# readable (Linux) it records starttime=<clock ticks since boot, stat field
+# 22>, which no wall-clock step moves; ps lstart is rendered from the current
+# boot time there, so every NTP, VM or WSL2 time-sync, or resume step would
+# make a live worker stop matching its own records. Elsewhere (Darwin) it
+# records ps lstart, which a clock step does not move. A Linux record still in
+# lstart form was written before this contract: fm_remote_job_process_start_for_record
+# compares it as lstart, and a lock owner in that form is identified by pid and
+# exact command so ensure replaces it in place.
 
 FM_REMOTE_JOB_LABEL=dev.firstmate.remote-job
 FM_REMOTE_JOB_MAX_BYTES=${FM_REMOTE_JOB_MAX_BYTES:-1048576}
@@ -767,7 +778,7 @@ fm_remote_job_stage_owner_alive() { # <stage-dir>
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
   [ "$pid" -gt 1 ] || return 1
   recorded_start=$(fm_remote_job_read_single_line "$stage/.owner-start" 256 2>/dev/null) || return 1
-  actual_start=$(fm_remote_job_process_start "$pid" 2>/dev/null) || return 1
+  actual_start=$(fm_remote_job_process_start_for_record "$pid" "$recorded_start" 2>/dev/null) || return 1
   [ "$recorded_start" = "$actual_start" ]
 }
 
@@ -902,13 +913,43 @@ fm_remote_job_worker_ready_path() { printf '%s\n' "$FM_REMOTE_JOB_STATE/worker.r
 fm_remote_job_worker_identity_path() { printf '%s\n' "$FM_REMOTE_JOB_STATE/worker.identity"; }
 fm_remote_job_worker_lock_path() { printf '%s\n' "$FM_REMOTE_JOB_STATE/worker.lock"; }
 
-fm_remote_job_process_start() {
+fm_remote_job_process_start() { # <pid>
+  local pid=$1 proc_root stat_line
+  local -a stat_fields
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc}
+  if [ -r "$proc_root/$pid/stat" ]; then
+    stat_line=$(cat "$proc_root/$pid/stat" 2>/dev/null) || return 1
+    # After the final comm delimiter, array index 19 is proc stat field 22.
+    read -r -a stat_fields <<< "${stat_line##*)}"
+    [ "${#stat_fields[@]}" -ge 20 ] || return 1
+    case "${stat_fields[19]}" in ''|*[!0-9]*) return 1 ;; esac
+    printf 'starttime=%s\n' "${stat_fields[19]}"
+    return 0
+  fi
+  fm_remote_job_process_lstart "$pid"
+}
+
+fm_remote_job_process_lstart() { # <pid>
   local pid=$1 ps_bin value
   if [ -x /bin/ps ]; then ps_bin=/bin/ps; elif [ -x /usr/bin/ps ]; then ps_bin=/usr/bin/ps; else return 1; fi
   value=$("$ps_bin" -p "$pid" -o lstart= 2>/dev/null) || return 1
   [ -n "$value" ] || return 1
   case "$value" in *$'\n'*|*$'\r'*) return 1 ;; esac
   printf '%s\n' "$value"
+}
+
+# The current start of <pid> in the form <recorded> was written in, so a record
+# a pre-upgrade worker wrote as ps lstart text is still compared as lstart
+# rather than never matching the starttime= form.
+fm_remote_job_process_start_for_record() { # <pid> <recorded-start>
+  local current
+  current=$(fm_remote_job_process_start "$1") || return 1
+  case "$current:$2" in
+    starttime=*:starttime=*) ;;
+    starttime=*:*) current=$(fm_remote_job_process_lstart "$1") || return 1 ;;
+  esac
+  printf '%s\n' "$current"
 }
 
 fm_remote_job_process_command() {
@@ -1012,7 +1053,15 @@ fm_remote_job_lock_owner_matches_process() {
   [ "$pid" -gt 1 ] || return 1
   recorded_start=$(fm_remote_job_read_single_line "$lock/start" 256) || return 1
   actual_start=$(fm_remote_job_process_start "$pid") || return 1
-  [ "$recorded_start" = "$actual_start" ] || return 1
+  # A Linux owner recorded as ps lstart text is a worker from before start ticks
+  # were recorded. Any clock step since has re-rendered its lstart, so its pid
+  # and exact command identify it, which lets ensure replace it in place
+  # instead of starting a second supervisor beside it.
+  case "$actual_start:$recorded_start" in
+    starttime=*:starttime=*) [ "$recorded_start" = "$actual_start" ] || return 1 ;;
+    starttime=*:*) ;;
+    *) [ "$recorded_start" = "$actual_start" ] || return 1 ;;
+  esac
   recorded_command=$(fm_remote_job_read_single_line "$lock/command" 8192) || return 1
   actual_command=$(fm_remote_job_process_command "$pid") || return 1
   [ "$recorded_command" = "$actual_command" ] || return 1
