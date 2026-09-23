@@ -126,7 +126,7 @@ test_first_scan_and_source_close() {
   axi "$home" add blocker "a queued blocker"
   axi "$home" add dependent "dependent work"
   axi "$home" block dependent --by blocker
-  axi "$home" done blocker
+  axi "$home" "done" blocker
   grep -F 'check: ready-work: dependent' "$state/.wake-queue" >/dev/null \
     || fail "closing a queued blocker did not queue a dependent wake"
   wake_ready "$home"
@@ -196,9 +196,9 @@ test_watcher_wakes_once_for_a_cleared_blocker() (
   dir=$(make_home watcher-ready)
   state="$dir/state"; socket_dir="$dir/tmux"; out="$dir/watch.out"
   mkdir -p "$socket_dir"
-  TMUX_TMPDIR="$socket_dir" TMUX= tmux new-session -d -s fm-ready-work-test \
+  TMUX_TMPDIR="$socket_dir" TMUX='' tmux new-session -d -s fm-ready-work-test \
     || fail "could not start an isolated tmux server"
-  trap 'TMUX_TMPDIR="$socket_dir" TMUX= tmux kill-server >/dev/null 2>&1 || true' EXIT
+  trap 'TMUX_TMPDIR="$socket_dir" TMUX="" tmux kill-server >/dev/null 2>&1 || true' EXIT
   axi "$dir" add blocker "the blocker"
   axi "$dir" add dependent "the dependent"
   axi "$dir" block dependent --by blocker
@@ -207,7 +207,7 @@ test_watcher_wakes_once_for_a_cleared_blocker() (
   external_axi "$dir" "done" blocker
   [ ! -s "$state/.wake-queue" ] || fail "setup queued a wake before the watcher: $(cat "$state/.wake-queue"); $(FM_HOME="$dir" "$ROOT/bin/fm-tasks-axi.sh" list --fields blocked,blocked_by,held,hold_until)"
 
-  TMUX_TMPDIR="$socket_dir" TMUX= FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 \
+  TMUX_TMPDIR="$socket_dir" TMUX='' FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   wait_for_exit "$pid" 100 || { reap "$pid"; fail "the watcher did not wake for newly ready work"; }
@@ -218,7 +218,7 @@ test_watcher_wakes_once_for_a_cleared_blocker() (
 
   ack_handled_wakes "$state" || fail "the ready-work wake could not be drained and acknowledged"
   : > "$out"
-  TMUX_TMPDIR="$socket_dir" TMUX= FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 \
+  TMUX_TMPDIR="$socket_dir" TMUX='' FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   rm -f "$state/.last-ready-scan"
