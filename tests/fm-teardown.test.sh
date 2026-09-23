@@ -728,21 +728,19 @@ test_teardown_closes_the_backlog_item_itself() {
 }
 
 test_teardown_wakes_the_work_its_close_unblocked() {
-  local case_dir out again
+  local case_dir
   case_dir=$(make_case tasks-axi-unblocked)
   write_meta "$case_dir" no-mistakes ship
   seed_backlog_in_flight "$case_dir"
   tasks-axi add dep-y1 "phase two" --file "$case_dir/data/backlog.md" >/dev/null
   tasks-axi block dep-y1 --by task-x1 --file "$case_dir/data/backlog.md" >/dev/null
-  FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
-    FM_CONFIG_OVERRIDE="$case_dir/config" "$ROOT/bin/fm-ready-work.sh" surface >/dev/null
-
-  out=$(run_teardown "$case_dir") || fail "teardown failed with a gated dependent"
+  run_teardown "$case_dir" >/dev/null || fail "teardown failed with a gated dependent"
   grep -F 'check: ready-work: dep-y1' "$case_dir/state/.wake-queue" >/dev/null \
     || fail "teardown did not queue a wake for its dependent"
-  again=$(FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
-    FM_CONFIG_OVERRIDE="$case_dir/config" "$ROOT/bin/fm-ready-work.sh" surface)
-  [ -z "$again" ] || fail "work teardown already woke would surface again: $again"
+  FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+    FM_CONFIG_OVERRIDE="$case_dir/config" "$ROOT/bin/fm-ready-work.sh" wake
+  [ "$(grep -Fc 'check: ready-work: dep-y1' "$case_dir/state/.wake-queue")" = 1 ] \
+    || fail "work teardown already woke was queued again"
   pass "teardown queues a durable wake for the work its close unblocked"
 }
 

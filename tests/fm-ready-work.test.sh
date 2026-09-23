@@ -43,10 +43,16 @@ external_axi() {  # <home> <tasks-axi args...>
     || fail "external tasks-axi $* failed in $home"
 }
 
-surface() {  # <home> [env assignments...]
+wake_ready() {  # <home> [env assignments...]
   local home=$1
   shift
-  env FM_HOME="$home" "$@" "$READY" surface
+  env FM_HOME="$home" "$@" "$READY" wake || fail "ready-work wake failed in $home"
+}
+
+ready_wake_count() {  # <home> <id>
+  local queue="$1/state/.wake-queue"
+  [ -f "$queue" ] || { printf '0\n'; return; }
+  grep -Fc "check: ready-work: $2" "$queue" || true
 }
 
 live_gates() {  # <home> [env assignments...]
@@ -57,63 +63,65 @@ live_gates() {  # <home> [env assignments...]
 }
 
 test_surfaces_once_per_readiness_transition() {
-  local home out
+  local home
   home=$(make_home transition)
   axi "$home" add blocker "the blocker"
   axi "$home" add dependent "the dependent"
   axi "$home" block dependent --by blocker
   axi "$home" start blocker
-  out=$(surface "$home")
-  [ -z "$out" ] || fail "blocked work surfaced: $out"
+  wake_ready "$home"
+  [ "$(ready_wake_count "$home" dependent)" = 0 ] || fail "blocked work woke"
 
   # Closed by hand, not by this home's teardown.
-  external_axi "$home" "done" blocker
-  out=$(surface "$home")
-  [ "$out" = dependent ] || fail "a blocker closed outside teardown did not surface its dependent: '$out'"
-  out=$(surface "$home")
-  [ -z "$out" ] || fail "an unchanged ready item surfaced twice: $out"
+  axi "$home" "done" blocker
+  wake_ready "$home"
+  [ "$(ready_wake_count "$home" dependent)" = 1 ] || fail "a cleared blocker did not wake its dependent"
+  wake_ready "$home"
+  [ "$(ready_wake_count "$home" dependent)" = 1 ] || fail "an unchanged ready item woke twice"
 
   axi "$home" hold dependent --reason "wait"
-  out=$(surface "$home")
-  [ -z "$out" ] || fail "re-holding surfaced work: $out"
-  external_axi "$home" unhold dependent
-  out=$(surface "$home")
-  [ "$out" = dependent ] || fail "released work did not surface as a new transition: '$out'"
+  wake_ready "$home"
+  [ "$(ready_wake_count "$home" dependent)" = 1 ] || fail "re-holding woke dependent work"
+  axi "$home" unhold dependent
+  wake_ready "$home"
+  [ "$(ready_wake_count "$home" dependent)" = 2 ] || fail "released work did not wake as a new transition"
 
   axi "$home" start dependent
-  out=$(surface "$home")
-  [ -z "$out" ] || fail "dispatched work surfaced: $out"
+  wake_ready "$home"
+  [ "$(ready_wake_count "$home" dependent)" = 2 ] || fail "dispatched work woke"
   grep -qx dependent "$home/state/.ready-work-surfaced" \
     && fail "dispatched work kept its surfaced marker"
   pass "ready work is surfaced once per readiness transition and its marker retires on dispatch"
 }
 
 test_date_gate_surfaces_when_due() {
-  local home out
+  local home
   home=$(make_home date-gate)
   axi "$home" add dated "deferred by the captain"
   axi "$home" hold dated --reason "revisit later" --kind captain --until "$EAST_TODAY"
-  out=$(surface "$home" TZ=$WEST)
-  [ -z "$out" ] || fail "seeding surfaced work: $out"
+  wake_ready "$home" TZ=$WEST
+  [ "$(ready_wake_count "$home" dated)" = 0 ] || fail "a future gate woke"
   [ "$(live_gates "$home" TZ=$WEST)" = 1 ] || fail "a future-dated captain hold is not a live gate"
-  out=$(surface "$home" TZ=$WEST)
-  [ -z "$out" ] || fail "a hold not yet due surfaced: $out"
-  out=$(surface "$home" TZ=$EAST)
-  [ "$out" = dated ] || fail "a captain hold whose date passed did not surface: '$out'"
+  wake_ready "$home" TZ=$WEST
+  [ "$(ready_wake_count "$home" dated)" = 0 ] || fail "a hold not yet due woke"
+  wake_ready "$home" TZ=$EAST
+  [ "$(ready_wake_count "$home" dated)" = 1 ] || fail "a captain hold whose date passed did not wake"
   [ "$(live_gates "$home" TZ=$EAST)" = 0 ] || fail "a due hold still counts as a live gate"
   pass "a dated captain hold surfaces once its date arrives and stops needing a watcher"
 }
 
 test_first_scan_and_source_close() {
-  local home out state
+  local home state
   home=$(make_home first-scan)
   state="$home/state"
   axi "$home" add ready "ready from creation"
   axi "$home" add due "held until today"
   axi "$home" hold due --reason later --until "$EAST_TODAY"
-  out=$(surface "$home" TZ=$EAST)
-  [ "$out" = due ] || fail "the first scan did not surface an already due gate: '$out'"
-  [ -z "$(surface "$home" TZ=$EAST)" ] || fail "the due gate surfaced twice"
+  wake_ready "$home" TZ=$EAST
+  [ "$(ready_wake_count "$home" due)" = 1 ] || fail "the first scan did not wake an already due gate"
+  [ "$(ready_wake_count "$home" ready)" = 0 ] || fail "work ready from creation woke"
+  wake_ready "$home" TZ=$EAST
+  [ "$(ready_wake_count "$home" due)" = 1 ] || fail "the due gate woke twice"
 
   axi "$home" add blocker "a queued blocker"
   axi "$home" add dependent "dependent work"
@@ -121,19 +129,21 @@ test_first_scan_and_source_close() {
   axi "$home" done blocker
   grep -F 'check: ready-work: dependent' "$state/.wake-queue" >/dev/null \
     || fail "closing a queued blocker did not queue a dependent wake"
-  [ -z "$(surface "$home")" ] || fail "a source wake repeated through the scanner"
+  wake_ready "$home"
+  [ "$(ready_wake_count "$home" dependent)" = 1 ] || fail "a source wake repeated through the scanner"
   pass "a first due scan surfaces its gate and a queued close wakes its dependent"
 }
 
 test_alternate_state_keeps_home_backlog() {
-  local home state out
+  local home state
   home=$(make_home alternate-state)
   state="$home/other-state"
   mkdir -p "$state"
   axi "$home" add due "held until today"
   axi "$home" hold due --reason later --until "$EAST_TODAY"
-  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$state" TZ=$EAST "$READY" surface)
-  [ "$out" = due ] || fail "alternate state read the wrong backlog: '$out'"
+  FM_HOME="$home" FM_STATE_OVERRIDE="$state" TZ=$EAST "$READY" wake
+  grep -F 'check: ready-work: due' "$state/.wake-queue" >/dev/null \
+    || fail "alternate state read the wrong backlog"
   pass "an alternate state directory still reads the configured home backlog"
 }
 
@@ -192,7 +202,7 @@ test_watcher_wakes_once_for_a_cleared_blocker() {
   axi "$dir" add dependent "the dependent"
   axi "$dir" block dependent --by blocker
   axi "$dir" start blocker
-  [ -z "$(surface "$dir")" ] || fail "seeding surfaced work"
+  wake_ready "$dir"
   external_axi "$dir" "done" blocker
   [ ! -s "$state/.wake-queue" ] || fail "setup queued a wake before the watcher: $(cat "$state/.wake-queue"); $(FM_HOME="$dir" "$ROOT/bin/fm-tasks-axi.sh" list --fields blocked,blocked_by,held,hold_until)"
 

@@ -3,9 +3,9 @@
 # became dispatchable without this home acting, and report whether gated queued
 # work still needs a watcher to notice it.
 #
-# Usage: fm-ready-work.sh surface|wake
-#   Surface queued task ids released by a date or blocker gate since the last
-#   delivery; wake appends them to the durable wake queue.
+# Usage: fm-ready-work.sh wake
+#   Append queued task ids released by a date or blocker gate to the durable
+#   wake queue before recording them as surfaced.
 # Sourced (. bin/fm-ready-work.sh): fm_ready_work_scan, fm_ready_work_commit,
 # fm_ready_work_release (bin/fm-watch.sh), and fm_ready_work_live_gates
 # (bin/fm-supervision-lib.sh).
@@ -13,9 +13,10 @@
 # WHY. Queued work gated on a date (`tasks-axi hold --until`, including captain
 # holds deferred with bin/fm-captain-hold.sh --until) or on blockers can become
 # ready without any turn in this home: a date passes, or a blocker is closed by a
-# captain answer, a hand-run backlog close, or work elsewhere. Teardown and
-# session start re-evaluate the queue, but nothing else did, so such work waited
-# for the next unrelated teardown or session start.
+# captain answer or a supported backlog close. A bare tasks-axi mutation bypasses
+# bin/fm-tasks-axi.sh and is unsupported; home-local blockers missed that way are
+# re-evaluated at session start. An undated captain hold or queued blocker alone
+# does not keep a watcher running.
 #
 # READINESS is tasks-axi's own derivation, read from one `tasks-axi list` through
 # bin/fm-tasks-axi.sh: its derived `blocked` and `held` fields already apply
@@ -234,33 +235,26 @@ fm_ready_work_release() {
 }
 
 fm_ready_work_main() {
-  local state mode
+  local state
   case "${1:-}" in
-    surface|wake) mode=$1 ;;
+    wake) ;;
     -h|--help)
       awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
       return 0
       ;;
     *)
-      printf 'usage: fm-ready-work.sh surface|wake\n' >&2
+      printf 'usage: fm-ready-work.sh wake\n' >&2
       return 2
       ;;
   esac
   state=${FM_STATE_OVERRIDE:-${FM_HOME:-$(cd "$FM_READY_WORK_DIR/.." && pwd)}/state}
   fm_ready_work_scan "$state" || return 0
   if [ -n "$FM_READY_WORK_NEW" ]; then
-    if [ "$mode" = wake ]; then
-      . "$FM_READY_WORK_DIR/fm-wake-lib.sh"
-      fm_wake_append check ready-work "check: ready-work: $FM_READY_WORK_NEW" || {
-        fm_ready_work_release
-        return 1
-      }
-    else
-      printf '%s\n' "$FM_READY_WORK_NEW" || {
-        fm_ready_work_release
-        return 1
-      }
-    fi
+    . "$FM_READY_WORK_DIR/fm-wake-lib.sh"
+    fm_wake_append check ready-work "check: ready-work: $FM_READY_WORK_NEW" || {
+      fm_ready_work_release
+      return 1
+    }
   fi
   fm_ready_work_commit "$state"
 }
