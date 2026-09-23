@@ -727,6 +727,25 @@ test_teardown_closes_the_backlog_item_itself() {
   pass "teardown closes its own backlog item before reporting success"
 }
 
+test_teardown_names_the_work_its_close_unblocked() {
+  local case_dir out again
+  case_dir=$(make_case tasks-axi-unblocked)
+  write_meta "$case_dir" no-mistakes ship
+  seed_backlog_in_flight "$case_dir"
+  tasks-axi add dep-y1 "phase two" --file "$case_dir/data/backlog.md" >/dev/null
+  tasks-axi block dep-y1 --by task-x1 --file "$case_dir/data/backlog.md" >/dev/null
+  FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+    FM_CONFIG_OVERRIDE="$case_dir/config" "$ROOT/bin/fm-ready-work.sh" surface >/dev/null
+
+  out=$(run_teardown "$case_dir") || fail "teardown failed with a gated dependent"
+  printf '%s\n' "$out" | grep -Fx 'Backlog: newly ready queued work: dep-y1' >/dev/null \
+    || fail "teardown did not name the dependent its close unblocked: $out"
+  again=$(FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+    FM_CONFIG_OVERRIDE="$case_dir/config" "$ROOT/bin/fm-ready-work.sh" surface)
+  [ -z "$again" ] || fail "work teardown already named would wake the watcher again: $again"
+  pass "teardown names the queued work its close unblocked and records it as surfaced"
+}
+
 test_teardown_manual_backend_leaves_the_backlog_to_the_operator() {
   local case_dir out backlog_path
   case_dir=$(make_case tasks-axi-manual-optout)
@@ -3861,6 +3880,7 @@ EOF
 
 test_local_only_fork_remote_allows
 test_teardown_closes_the_backlog_item_itself
+test_teardown_names_the_work_its_close_unblocked
 test_teardown_manual_backend_leaves_the_backlog_to_the_operator
 test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows

@@ -242,6 +242,8 @@ block_stop() {
       printf '●  %s process-event source(s) registered, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_SOURCES" "$FM_SUP_BEACON_DESC"
     elif [ "$FM_SUP_CHECKS" -gt 0 ]; then
       printf '●  %s registered custom check(s), but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_CHECKS" "$FM_SUP_BEACON_DESC"
+    elif [ "$FM_SUP_GATED" -gt 0 ]; then
+      printf '●  %s queued backlog item(s) wait on a date or blocker, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_GATED" "$FM_SUP_BEACON_DESC"
     else
       printf '●  X-mode relay polling needs supervision, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_BEACON_DESC"
     fi
@@ -516,6 +518,8 @@ if [ "$terminal_status" -eq 0 ]; then
     NEED_DESC="$FM_SUP_SOURCES process-event source(s) registered"
   elif [ "$FM_SUP_CHECKS" -gt 0 ]; then
     NEED_DESC="$FM_SUP_CHECKS registered custom check(s)"
+  elif [ "$FM_SUP_GATED" -gt 0 ]; then
+    NEED_DESC="$FM_SUP_GATED queued backlog item(s) waiting on a date or blocker"
   else
     NEED_DESC="X-mode relay polling active"
   fi

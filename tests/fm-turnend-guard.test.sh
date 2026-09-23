@@ -190,6 +190,11 @@ install_guard_scripts() {
   cp "$ROOT/bin/fm-harness.sh" "$dir/bin/fm-harness.sh"
   cp "$ROOT/bin/fm-primary-scope-lib.sh" "$dir/bin/fm-primary-scope-lib.sh"
   cp "$ROOT/bin/fm-supervision-lib.sh" "$dir/bin/fm-supervision-lib.sh"
+  cp "$ROOT/bin/fm-ready-work.sh" "$dir/bin/fm-ready-work.sh"
+  cp "$ROOT/bin/fm-tasks-axi.sh" "$dir/bin/fm-tasks-axi.sh"
+  cp "$ROOT/bin/fm-tasks-axi-lib.sh" "$dir/bin/fm-tasks-axi-lib.sh"
+  cp "$ROOT/bin/fm-backlog-transition-lib.sh" "$dir/bin/fm-backlog-transition-lib.sh"
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$dir/bin/fm-timeout-lib.sh"
   cp "$ROOT/bin/fm-wake-lib.sh" "$dir/bin/fm-wake-lib.sh"
   cp "$ROOT/bin/fm-hook-host-lib.sh" "$dir/bin/fm-hook-host-lib.sh"
   cp "$ROOT/bin/fm-session-lock-lib.sh" "$dir/bin/fm-session-lock-lib.sh"
@@ -486,6 +491,26 @@ test_hook_registered_check_only_blocks_with_check_banner() {
   assert_contains "$out" "1 registered custom check(s), but no live watcher" "check-only blind stop must identify its supervision need"
   assert_not_contains "$out" "X-mode relay polling needs supervision" "check-only blind stop must not be misreported as relay polling"
   pass "fm-turnend-guard: registered-check-only supervision is named in the block banner"
+}
+
+test_hook_gated_backlog_blocks_only_while_its_gate_can_clear() {
+  local dir out status
+  command -v tasks-axi >/dev/null 2>&1 || { printf 'skip: tasks-axi not found\n'; return 0; }
+  dir=$(make_primary_dir "$TMP_ROOT/hook-gated-backlog")
+  mkdir -p "$dir/data"
+  cp "$ROOT/.tasks.toml" "$dir/.tasks.toml"
+  printf '%s\n' '# Backlog' '' '## In flight' '' '## Queued' '' '## Done' > "$dir/data/backlog.md"
+  tasks-axi add question "a captain call" --file "$dir/data/backlog.md" >/dev/null
+  tasks-axi hold question --reason "captain decides" --kind captain --file "$dir/data/backlog.md" >/dev/null
+  out=$(run_hook "$dir" false); status=$?
+  expect_code 0 "$status" "an undated captain hold alone must not demand a watcher"
+  tasks-axi add later "phase two" --file "$dir/data/backlog.md" >/dev/null
+  tasks-axi hold later --reason "not before" --until 2099-01-01 --file "$dir/data/backlog.md" >/dev/null
+  out=$(run_hook "$dir" false); status=$?
+  expect_code 2 "$status" "a future-dated queued item must keep the home supervised"
+  assert_contains "$out" "1 queued backlog item(s) wait on a date or blocker, but no live watcher" "gated-only blind stop must identify its supervision need"
+  assert_not_contains "$out" "X-mode relay polling needs supervision" "gated-only blind stop must not be misreported as relay polling"
+  pass "fm-turnend-guard: dated queued work is guarded and undated captain holds are not"
 }
 
 test_hook_ignores_repo_state_when_fm_home_set() {
@@ -1210,6 +1235,7 @@ install_integrated_autoarm() {
   cp "$ROOT/bin/fm-claude-stop-autoarm.sh" "$dir/bin/fm-claude-stop-autoarm.sh"
   cp "$ROOT/bin/fm-primary-scope-lib.sh" "$dir/bin/fm-primary-scope-lib.sh"
   cp "$ROOT/bin/fm-supervision-lib.sh" "$dir/bin/fm-supervision-lib.sh"
+  cp "$ROOT/bin/fm-ready-work.sh" "$dir/bin/fm-ready-work.sh"
   cp "$ROOT/bin/fm-wake-lib.sh" "$dir/bin/fm-wake-lib.sh"
   cp "$ROOT/bin/fm-hook-host-lib.sh" "$dir/bin/fm-hook-host-lib.sh"
   cp "$ROOT/bin/fm-session-lock-lib.sh" "$dir/bin/fm-session-lock-lib.sh"
@@ -2210,6 +2236,7 @@ test_hook_blocks_from_fm_home_state
 test_hook_x_mode_reason_sources_cadence
 test_hook_x_mode_only_blocks_in_default_mode
 test_hook_registered_check_only_blocks_with_check_banner
+test_hook_gated_backlog_blocks_only_while_its_gate_can_clear
 test_hook_ignores_repo_state_when_fm_home_set
 test_hook_uses_state_override
 test_hook_loop_guard_allows_retry

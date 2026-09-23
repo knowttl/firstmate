@@ -12,6 +12,9 @@
 # live watcher process means per supervision model. The status fields here retain
 # the beacon-age details used in their messages.
 
+# shellcheck source=bin/fm-ready-work.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-ready-work.sh"
+
 # Portable mtime; Linux stat lacks -f, macOS stat lacks -c.
 fm_sup_stat_mtime() {
   if [ "$(uname)" = Darwin ]; then
@@ -35,10 +38,16 @@ fm_sup_stat_mtime() {
 #                         sweep's call at execution time, and a home whose check
 #                         no longer validates needs the watcher precisely so the
 #                         sweep can report the rejection instead of going quiet.
+#   FM_SUP_GATED          count of live-gated queued backlog items: a future hold
+#                         date, or blockers that can close without this home
+#                         acting (bin/fm-ready-work.sh owns that definition and
+#                         the watcher wake it waits for). Read only when nothing
+#                         above already needs supervision, which keeps the
+#                         backlog read off a busy home's turn boundary; 0 then.
 #   FM_SUP_NEEDED         true/false - in-flight work, an X-mode relay poll, a
 #                         registered event source (a source is a wait on an
 #                         external process, not a task, so it has no metadata),
-#                         or a registered custom check
+#                         a registered custom check, or live-gated queued work
 #   FM_SUP_WATCHER_FRESH  true/false - a watcher beacon within the grace window
 #   FM_SUP_BEACON_DESC    human-readable beacon age, for banners ("never" if absent)
 #   FM_SUP_QUEUE_PENDING  true/false - state/.wake-queue has unread records
@@ -77,6 +86,11 @@ fm_supervision_status() {
     || [ "$FM_SUP_SOURCES" -gt 0 ] \
     || [ "$FM_SUP_CHECKS" -gt 0 ]; then
     FM_SUP_NEEDED=true
+  fi
+  FM_SUP_GATED=0
+  if [ "$FM_SUP_NEEDED" = false ]; then
+    FM_SUP_GATED=$(fm_ready_work_live_gates "$state")
+    [ "$FM_SUP_GATED" -gt 0 ] && FM_SUP_NEEDED=true
   fi
 
   beat="$state/.last-watcher-beat"
