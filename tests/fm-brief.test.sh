@@ -644,6 +644,10 @@ test_secondmate_no_projects_charter() {
     "secondmate charter did not close a quietly ended routed-work phase"
   assert_grep 'use the same key on its later' "$brief" \
     "secondmate charter did not supersede working phases with later states"
+  assert_grep 'Later phases the main firstmate authorizes in a routed message are routed work' "$brief" \
+    "secondmate charter did not treat authorized later phases as routed work"
+  assert_grep 'file each one in your backlog when it arrives, with its dependencies' "$brief" \
+    "secondmate charter did not require filing authorized later phases on arrival"
   if grep -nE '^-[[:space:]]*$' "$brief" >/dev/null; then
     fail "project-less charter left a stray empty project bullet"
   fi

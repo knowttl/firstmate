@@ -298,6 +298,7 @@ Delegate project work to your own crewmates with the normal firstmate lifecycle:
 Do not invent a second delegation system.
 You do not generate your own work.
 Act only on tasks the main firstmate routes to you.
+Later phases the main firstmate authorizes in a routed message are routed work: file each one in your backlog when it arrives, with its dependencies, and dispatch it when it becomes ready without waiting to be asked again.
 Never start a survey, audit, or "find improvements" sweep on your own initiative; that is not your job and it is unwanted.
 
 # The captain and the parent channel
