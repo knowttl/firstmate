@@ -439,7 +439,8 @@ test_scenario_d() {
   : > "$STATE_DIR/big-d1.status"
   : > "$STATE_DIR/mid-d2.status"
   escalate_add "$STATE_DIR" "event A: done: PR https://example.test/pr/401"
-  escalate_add "$STATE_DIR" "big-d1.status: done: $big | extra context | mid-d2.status: done: $mid"
+  escalate_add "$STATE_DIR" "big-d1.status: done: $big | extra context" "$STATE_DIR/big-d1.status"
+  escalate_add "$STATE_DIR" "mid-d2.status: done: $mid" "$STATE_DIR/mid-d2.status"
   escalate_add "$STATE_DIR" "event B: done: PR https://example.test/pr/402"
   afk_enter "$STATE_DIR"
   start_daemon

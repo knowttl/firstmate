@@ -367,6 +367,7 @@ classify_signal() {  # <reason-after-colon> <state>
       marker=$(_seen_status_path "$state" "$task")
       status_presentation_marker_reported_matches "$marker" "$sig" && continue
       distilled="${distilled}$(basename "$f"): unreadable status span | "
+      [ -z "${FM_ESCALATION_ITEMS_FILE:-}" ] || printf '%s\t%s\n' "$f" "$(basename "$f"): unreadable status span" >> "$FM_ESCALATION_ITEMS_FILE" || return 1
       [ -n "${FM_STATUS_SPAN_ENDPOINT_FILE:-}" ] \
         && printf 'ERROR\t%s\t%s\n' "$task" "$sig" >> "$FM_STATUS_SPAN_ENDPOINT_FILE"
       rel=1
@@ -379,12 +380,14 @@ classify_signal() {  # <reason-after-colon> <state>
     if [ "$rc" -eq 0 ]; then
       event=${rest#*$'\t'}
       distilled="${distilled}$(basename "$f"): ${event} | "
+      [ -z "${FM_ESCALATION_ITEMS_FILE:-}" ] || printf '%s\t%s\n' "$f" "$(basename "$f"): $event" >> "$FM_ESCALATION_ITEMS_FILE" || return 1
       rel=1
       continue
     fi
     last=$(last_status_line "$f")
     [ -n "$last" ] || continue
     distilled="${distilled}$(basename "$f"): ${last} | "
+    [ -z "${FM_ESCALATION_ITEMS_FILE:-}" ] || printf '%s\t%s\n' "$f" "$(basename "$f"): $last" >> "$FM_ESCALATION_ITEMS_FILE" || return 1
     # Nothing captain-relevant is left ahead of the recorded offset. When the log
     # nonetheless ends on a captain-relevant line, this signal is a re-notification
     # of something already escalated, not a routine one; position is the whole
@@ -694,31 +697,16 @@ stale_window_is_busy() {  # <window> <state>
   [ "${verdict%% *}" = busy ]
 }
 
-escalate_add() {  # <state> <distilled-item>
-  local state=$1 item=$2 buf part rest next over
+escalate_add() {  # <state> <distilled-item> [source-status-log]
+  local state=$1 item=$2 source=${3:-} buf over record
   buf="$state/.subsuper-escalations"
   [ -s "$buf" ] || _now > "${buf}.since"
-  while :; do
-    part=
-    rest=$item
-    while [ "$rest" != "${rest#* | }" ]; do
-      next=${rest#* | }
-      part=${part:+$part | }${rest%% | *}
-      if [[ $next =~ ^([A-Za-z0-9._-]+)\.status:\  ]] && [ -f "$state/${BASH_REMATCH[1]}.status" ]; then
-        item=$next
-        break
-      fi
-      rest=$next
-    done
-    if [ "$rest" = "${rest#* | }" ]; then
-      part=${part:+$part | }$rest
-      item=
-    fi
-    over=$(( $(_byte_len "$part") - ESCALATION_ITEM_MAX_BYTES ))
-    [ "$over" -le 0 ] || part=$(_escalation_item_truncate "$part" "$over" "$state")
-    printf '%s\n' "$part" >> "$buf" || return 1
-    [ -n "$item" ] || break
-  done
+  record=$item
+  [ -z "$source" ] || record="@status-log=$source"$'\t'"$item"
+  over=$(( $(_byte_len "$record") - ESCALATION_ITEM_MAX_BYTES ))
+  [ "$over" -le 0 ] || item=$(_escalation_item_truncate "$item" "$over" "$source")
+  [ -z "$source" ] || item="@status-log=$source"$'\t'"$item"
+  printf '%s\n' "$item" >> "$buf"
 }
 
 # --- digest byte bound ---------------------------------------------------------
@@ -763,14 +751,10 @@ _cut_bytes() (  # <text> <max-bytes>
 # Shorten one buffered item by at least <over> bytes and end it with a marker
 # naming the dropped byte count and, for a status-log event, the log that still
 # holds the full text.
-_escalation_item_truncate() (  # <item> <over-bytes> <state>
-  item=$1 over=$2 state=$3 source=''
+_escalation_item_truncate() (  # <item> <over-bytes> <source-status-log>
+  item=$1 over=$2 source=$3
   LC_ALL=C
-  case "$item" in
-    *.status:\ *)
-      name=${item%%.status: *}
-      case "$name" in ''|*[!A-Za-z0-9._-]*) ;; *) [ ! -f "$state/$name.status" ] || source="; full text in $state/$name.status" ;; esac ;;
-  esac
+  [ -z "$source" ] || source="; full text in $source"
   # The marker is sized with the item's full length, which bounds the digits of
   # the count actually dropped.
   marker=" ... [+${#item} bytes truncated$source]"
@@ -790,7 +774,7 @@ _escalation_digest() {  # <count> <joined-items>
 # inject (or empty buffer) after removing only the delivered lines, non-zero on
 # inject failure (buffer preserved for retry / catch-up).
 escalate_flush() {  # <state>
-  local state=$1 buf budget envelope envelope_bytes item joined='' try msg='' over taken=0
+  local state=$1 buf budget envelope envelope_bytes record source item joined='' try msg='' over taken=0
   buf="$state/.subsuper-escalations"
   [ -s "$buf" ] || return 0
   [ -f "$buf" ] || return 1
@@ -798,12 +782,19 @@ escalate_flush() {  # <state>
   # inject_msg wraps the digest in the typed envelope, which counts too.
   fm_operational_input_encode away-supervisor x envelope || return 1
   envelope_bytes=$(( $(_byte_len "$envelope") - 1 ))
-  while IFS= read -r item || [ -n "$item" ]; do
+  while IFS= read -r record || [ -n "$record" ]; do
+    source=
+    item=$record
+    if [[ $record == @status-log=*$'\t'* ]]; then
+      source=${record%%$'\t'*}
+      source=${source#@status-log=}
+      item=${record#*$'\t'}
+    fi
     try=$(_escalation_digest "$((taken + 1))" "${joined:+$joined | }$item")
     over=$(( envelope_bytes + $(_byte_len "$try") - budget ))
     if [ "$over" -gt 0 ]; then
       [ "$taken" -eq 0 ] || break
-      item=$(_escalation_item_truncate "$item" "$over" "$state")
+      item=$(_escalation_item_truncate "$item" "$over" "$source")
       try=$(_escalation_digest 1 "$item")
     fi
     # Join items with the literal " | " separator into one digest line.
@@ -1298,7 +1289,7 @@ housekeeping() {  # <state>
         ident=$(status_observed_signature "$f")
         status_presentation_marker_reported_matches "$(_seen_status_path "$state" "$task")" "$ident" \
           && continue
-        if escalate_add "$state" "$(basename "$f"): unreadable status span (catch-all scan)"; then
+        if escalate_add "$state" "$(basename "$f"): unreadable status span (catch-all scan)" "$f"; then
           status_presentation_marker_report "$(_seen_status_path "$state" "$task")" "$ident" || true
         fi
         continue
@@ -1308,11 +1299,11 @@ housekeeping() {  # <state>
       rest=${record#*$'\t'}; ident=${rest%%$'\t'*}
       if [ "$rc" -eq 0 ]; then
         event=${rest#*$'\t'}
-        if escalate_add "$state" "$(basename "$f"): $event (catch-all scan)"; then
+        if escalate_add "$state" "$(basename "$f"): $event (catch-all scan)" "$f"; then
           mark_status_seen "$state" "$task" "$endpoint" "$ident" || true
         fi
       elif ! mark_status_seen "$state" "$task" "$endpoint" "$ident"; then
-        escalate_add "$state" "$(basename "$f"): status position commit failed (catch-all scan)"
+        escalate_add "$state" "$(basename "$f"): status position commit failed (catch-all scan)" "$f"
       fi
     done
   fi
@@ -1452,8 +1443,9 @@ is_wake_reason() {  # <reason>
 # is populated, suppression markers commit, and the digest names the decision
 # instead of "unknown wake:".
 handle_wake() {  # <reason> <state>
-  local reason=$1 state=$2 decision action distilled task last stale_detail
+  local reason=$1 state=$2 decision action distilled task last stale_detail source='' item buffered
   local capture="$state/.subsuper-classified-end.$$" span_record='' span_rc='' endpoint ident rest sig marker
+  local items_file="$state/.subsuper-classified-items.$$"
   local kind="" arg="" classification_failed=0 span_failure_repeat=0
   : > "$capture" || return 1
   if should_force_self "$reason"; then
@@ -1468,7 +1460,9 @@ handle_wake() {  # <reason> <state>
                 needs-decision:*) arg="${reason#needs-decision: }" ;;
                 *) arg="${reason#signal: }" ;;
               esac
-              decision=$(FM_STATUS_SPAN_ENDPOINT_FILE="$capture" classify_signal "$arg" "$state") ;;
+              : > "$items_file" || { rm -f "$capture"; return 1; }
+              decision=$(FM_STATUS_SPAN_ENDPOINT_FILE="$capture" FM_ESCALATION_ITEMS_FILE="$items_file" classify_signal "$arg" "$state") \
+                || { rm -f "$capture" "$items_file"; return 1; } ;;
     stale:*)  kind=stale; arg="${reason#stale: }"; stale_detail="${arg#"$arg"}"
               case "$arg" in *" ("*) stale_detail="${arg#*" ("}"; arg="${arg%% \(*}" ;; esac
               task=$(window_to_task "$arg" "$state")
@@ -1498,6 +1492,7 @@ handle_wake() {  # <reason> <state>
                 decision="self|unreadable status span already reported for $task"
               else
                 decision=$(classify_stale "$arg" "$state" "$span_record" "$span_rc")
+                [ "$span_rc" != 0 ] || source="$state/$task.status"
               fi
               # An enriched wedge reason carries the watcher's own escalation count
               # and its "do not re-absorb on the run-step/pane state alone" demand,
@@ -1514,8 +1509,10 @@ handle_wake() {  # <reason> <state>
                 *) case "$stale_detail" in
                      idle\ *s,\ possible\ wedge,\ escalation\ *)
                        last=$(last_status_line "$state/$task.status")
-                       status_is_paused_or_captain_held "$last" \
-                         || decision="escalate|${reason#stale: }"
+                       if ! status_is_paused_or_captain_held "$last"; then
+                         decision="escalate|${reason#stale: }"
+                         source=
+                       fi
                        ;;
                    esac ;;
               esac ;;
@@ -1534,7 +1531,16 @@ handle_wake() {  # <reason> <state>
   case "$action" in
     escalate)
       log "escalate: $reason -> $distilled"
-      if escalate_add "$state" "$distilled"; then
+      buffered=0
+      if [ "$kind" = signal ]; then
+        while IFS=$'\t' read -r source item; do
+          escalate_add "$state" "$item" "$source" || { buffered=1; break; }
+        done < "$items_file"
+        [ -s "$items_file" ] || buffered=1
+      else
+        escalate_add "$state" "$distilled" "$source" || buffered=1
+      fi
+      if [ "$buffered" -eq 0 ]; then
         # A terminal-stale escalate must not leave a persistence marker behind, or
         # housekeeping re-escalates the same pane as a false wedge later.
         [ "$kind" = "stale" ] && stale_marker_remove "$arg" "$state"
@@ -1590,7 +1596,7 @@ handle_wake() {  # <reason> <state>
   if [ "$action" = self ] && { [ "$kind" = signal ] || [ "$kind" = stale ]; }; then
     mark_escalated_seen "$state" "$capture" || classification_failed=1
   fi
-  rm -f "$capture"
+  rm -f "$capture" "$items_file"
   [ "$classification_failed" -eq 0 ]
 }
 

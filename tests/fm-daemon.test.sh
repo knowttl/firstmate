@@ -1449,7 +1449,8 @@ test_escalate_flush_bounds_each_digest() {
   : > "$state/mid-t2.status"
   escalate_add "$state" "event A: done: PR 1"
   escalate_add "$state" "event B: done: PR 2"
-  escalate_add "$state" "big-t1.status: done: $big | extra context | mid-t2.status: done: $mid"
+  escalate_add "$state" "big-t1.status: done: $big | extra context" "$state/big-t1.status"
+  escalate_add "$state" "mid-t2.status: done: $mid" "$state/mid-t2.status"
   escalate_add "$state" "event C: done: PR 3"
   [ "$(wc -l < "$state/.subsuper-escalations")" -eq 5 ] \
     || fail "combined signal did not preserve each task as a separate buffered item"
@@ -1495,28 +1496,49 @@ test_escalate_flush_bounds_each_digest() {
 }
 
 test_escalate_add_ignores_false_status_boundaries() {
-  local dir state big line
+  local dir state fakebin sent capture big line
   dir=$(make_supercase false-status-boundary)
-  state="$dir/state"
+  state="$dir/state"; fakebin="$dir/fakebin"
+  sent="$dir/sent.log"; : > "$sent"
+  capture="$dir/pane.txt"; printf '\342\235\257 \n' > "$capture"
   big=$(head -c 2000 /dev/zero | tr '\0' 'z')
-  : > "$state/real.status"
-  escalate_add "$state" "real.status: needs-decision: choose | missing.status: $big"
+  printf 'needs-decision [key=choose]: inspect excerpt | b.status: %s\n' "$big" > "$state/a.status"
+  printf 'working: routine\n' > "$state/b.status"
+  FM_ESCALATE_BATCH_SECS=999 handle_wake "signal: $state/a.status" "$state"
   [ "$(wc -l < "$state/.subsuper-escalations")" -eq 1 ] \
-    || fail "status text naming a missing file was split into another event"
+    || fail "status text naming another existing task was split into another event"
   line=$(cat "$state/.subsuper-escalations")
   case "$line" in
-    *"full text in $state/real.status]"*) ;;
-    *) fail "real status lost its recovery pointer" ;;
+    *"full text in $state/a.status]"*) ;;
+    *) fail "signal lost its own status log pointer" ;;
   esac
   case "$line" in
-    *"full text in $state/missing.status]"*) fail "truncation pointed to a nonexistent status log" ;;
+    *"full text in $state/b.status]"*) fail "signal pointed to the status named in its excerpt" ;;
   esac
+  afk_enter "$state"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_PANE_ALIVE=1 FM_FAKE_TMUX_SENT="$sent" \
+    FM_FAKE_TMUX_CAPTURE="$capture" escalate_flush "$state" \
+    || fail "single status signal flush failed"
+  grep -F "full text in $state/a.status]" "$sent" >/dev/null \
+    || fail "single status signal lost its pointer during delivery"
+  grep -F "full text in $state/b.status]" "$sent" >/dev/null \
+    && fail "single status signal delivered the excerpt as another task"
+  [ ! -s "$state/.subsuper-escalations" ] || fail "delivered signal stayed buffered"
+  printf 'needs-decision [key=c]: choose | d.status: %s\n' "$big" > "$state/c.status"
+  printf 'done: %s\n' "$big" > "$state/d.status"
+  FM_ESCALATE_BATCH_SECS=999 handle_wake "signal: $state/c.status $state/d.status" "$state"
+  [ "$(wc -l < "$state/.subsuper-escalations")" -eq 2 ] \
+    || fail "two status files did not produce two buffered records"
+  grep -F "full text in $state/c.status]" "$state/.subsuper-escalations" >/dev/null \
+    || fail "first status in a combined signal lost its pointer"
+  grep -F "full text in $state/d.status]" "$state/.subsuper-escalations" >/dev/null \
+    || fail "second status in a combined signal lost its pointer"
   escalate_add "$state" "missing.status: $big"
   line=$(tail -1 "$state/.subsuper-escalations")
   case "$line" in
     *"full text in $state/missing.status]"*) fail "missing status received a recovery pointer" ;;
   esac
-  pass "status text cannot create a task boundary or a nonexistent log pointer"
+  pass "signal source paths define task boundaries and truncation pointers"
 }
 
 test_escalate_flush_reports_buffer_update_failure() {
@@ -1575,7 +1597,7 @@ test_stale_actionable_status_truncation_keeps_log_pointer() {
     || fail "stale status flush failed"
   grep -F "full text in $state/stale-t1.status]" "$sent" >/dev/null \
     || fail "stale status lost its log pointer during flush"
-  printf 'stale-t1.status: stale + actionable status: blocked [key=approval]: %s\n' "$big" \
+  printf '@status-log=%s\tstale-t1.status: stale + actionable status: blocked [key=approval]: %s\n' "$state/stale-t1.status" "$big" \
     >> "$state/.subsuper-escalations"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_PANE_ALIVE=1 FM_FAKE_TMUX_SENT="$sent" \
     FM_FAKE_TMUX_CAPTURE="$capture" escalate_flush "$state" \

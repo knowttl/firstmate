@@ -114,7 +114,8 @@ test_return_gate_owns_remediation_and_reports_catchup_to_bearings() {
     printf '\n## Done\n'
   } > "$dir/home/data/backlog.md"
   date +%s > "$dir/home/state/.afk"
-  printf 'repair-task.status: blocked synthetic dependency\n' > "$dir/home/state/.subsuper-escalations"
+  printf '@status-log=%s\trepair-task.status: blocked synthetic dependency\n' \
+    "$dir/home/state/repair-task.status" > "$dir/home/state/.subsuper-escalations"
   printf 'fm away-mode inject WEDGED: 4555s undelivered\n' > "$dir/home/state/.subsuper-inject-wedged"
   {
     printf '1784074271\t2\tsignal\trepair-task.status\tsignal: synthetic status\n'
