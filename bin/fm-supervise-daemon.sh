@@ -9,7 +9,8 @@
 # token-efficient replacement for the prior always-inject daemon: routine
 # signal/stale/heartbeat wakes cost zero firstmate context; only done/
 # needs-decision/blocked/failed/persistent-wedge/check-output events and a
-# declared-wait recheck reach the LLM, and even then as bounded pre-read digests.
+# declared-wait recheck reach the LLM, and even then as one pre-read digest per
+# batch window.
 #
 # PRESENCE-GATING (the /afk contract). The daemon is the away-mode engine: it
 # injects ONLY when the durable away-mode flag state/.afk is present. Invoking
@@ -223,8 +224,6 @@ WEDGE_ALARM_NOTIFIER_PID=
 INJECT_FAIL_SLEEP_DEFAULT=30
 INJECT_CONFIRM_RETRIES_DEFAULT=3
 INJECT_CONFIRM_SLEEP_DEFAULT=0.5
-INJECT_MAX_BYTES=1000
-ESCALATION_ITEM_MAX_BYTES=800
 CRASH_THRESHOLD_DEFAULT=10
 CRASH_WINDOW_DEFAULT=60
 CRASH_BACKOFF_DEFAULT=60
@@ -366,7 +365,6 @@ classify_signal() {  # <reason-after-colon> <state>
       marker=$(_seen_status_path "$state" "$task")
       status_presentation_marker_reported_matches "$marker" "$sig" && continue
       distilled="${distilled}$(basename "$f"): unreadable status span | "
-      [ -z "${FM_ESCALATION_ITEMS_FILE:-}" ] || printf '%s\t%s\n' "$f" "$(basename "$f"): unreadable status span" >> "$FM_ESCALATION_ITEMS_FILE" || return 1
       [ -n "${FM_STATUS_SPAN_ENDPOINT_FILE:-}" ] \
         && printf 'ERROR\t%s\t%s\n' "$task" "$sig" >> "$FM_STATUS_SPAN_ENDPOINT_FILE"
       rel=1
@@ -379,14 +377,12 @@ classify_signal() {  # <reason-after-colon> <state>
     if [ "$rc" -eq 0 ]; then
       event=${rest#*$'\t'}
       distilled="${distilled}$(basename "$f"): ${event} | "
-      [ -z "${FM_ESCALATION_ITEMS_FILE:-}" ] || printf '%s\t%s\n' "$f" "$(basename "$f"): $event" >> "$FM_ESCALATION_ITEMS_FILE" || return 1
       rel=1
       continue
     fi
     last=$(last_status_line "$f")
     [ -n "$last" ] || continue
     distilled="${distilled}$(basename "$f"): ${last} | "
-    [ -z "${FM_ESCALATION_ITEMS_FILE:-}" ] || printf '%s\t%s\n' "$f" "$(basename "$f"): $last" >> "$FM_ESCALATION_ITEMS_FILE" || return 1
     # Nothing captain-relevant is left ahead of the recorded offset. When the log
     # nonetheless ends on a captain-relevant line, this signal is a re-notification
     # of something already escalated, not a routine one; position is the whole
@@ -425,7 +421,7 @@ classify_stale() {  # <window> <state> [<span-record> <span-status>]
   if [ "$rc" -eq 0 ]; then
     rest=${record#*$'\t'}
     event=${rest#*$'\t'}
-    printf 'escalate|%s.status: stale + actionable status: %s' "$task" "$event"
+    printf 'escalate|stale + actionable status: %s' "$event"
     return
   fi
   if [ -n "$last" ] && status_is_paused_or_captain_held "$last"; then
@@ -477,8 +473,7 @@ classify_unknown() {  # <reason>
 
 # --- stale marker + escalation buffer (stateful, but via explicit state dir) -
 # Marker:   state/.subsuper-stale-<key>   contains the epoch first seen idle.
-# Buffer:   state/.subsuper-escalations    one distilled line per event; records
-#           with a source log carry @status-log=<source path><TAB> before the text.
+# Buffer:   state/.subsuper-escalations    one distilled line per escalation.
 # Seen:     state/.subsuper-seen-status-<task>  last reported file signature and
 #           classified byte offset, so failures and events do not re-fire while
 #           unread bytes remain recoverable.
@@ -697,127 +692,28 @@ stale_window_is_busy() {  # <window> <state>
   [ "${verdict%% *}" = busy ]
 }
 
-escalate_add() {  # <state> <distilled-item> [source-status-log]
-  local state=$1 item=$2 source=${3:-} buf over record
+escalate_add() {  # <state> <distilled-item>
+  local state=$1 item=$2 buf
   buf="$state/.subsuper-escalations"
   [ -s "$buf" ] || _now > "${buf}.since"
-  record=$item
-  [ -z "$source" ] || record="@status-log=$source"$'\t'"$item"
-  over=$(( $(_byte_len "$record") - ESCALATION_ITEM_MAX_BYTES ))
-  [ "$over" -le 0 ] || item=$(_escalation_item_truncate "$item" "$over" "$source")
-  [ -z "$source" ] || item="@status-log=$source"$'\t'"$item"
   printf '%s\n' "$item" >> "$buf"
 }
 
-# --- digest byte bound ---------------------------------------------------------
-# One inject is typed as a single argument to the backend's send command, so it
-# must stay below every transport ceiling it can meet: Linux refuses any single
-# exec argument of 128 KiB or more, tmux refuses a command of about 16 KB, and a
-# Claude composer on Herdr can drop the head of a typed burst above about 1,020
-# characters. A digest over a ceiling never reaches the pane, and because the
-# buffer is kept on failure every retry would resend the same batch forever.
-# escalate_flush therefore sends at most INJECT_MAX_BYTES of typed text per
-# inject and leaves the rest buffered for later batches.
-
-# Byte length of <text>, independent of the caller's locale.
-_byte_len() (  # <text>
-  LC_ALL=C
-  printf '%s' "${#1}"
-)
-
-# The longest prefix of <text> of at most <max> bytes that does not end inside
-# a UTF-8 sequence.
-_cut_bytes() (  # <text> <max-bytes>
-  LC_ALL=C
-  s=$1
-  [ "${#s}" -gt "$2" ] || { printf '%s' "$s"; exit 0; }
-  s=${s:0:$2}
-  t=$s
-  c=0
-  while :; do
-    case "${t: -1}" in [$'\x80'-$'\xbf']) t=${t%?}; c=$((c + 1)) ;; *) break ;; esac
-  done
-  case "${t: -1}" in
-    [$'\xc0'-$'\xdf']) need=1 ;;
-    [$'\xe0'-$'\xef']) need=2 ;;
-    [$'\xf0'-$'\xf7']) need=3 ;;
-    *) need=$c ;;
-  esac
-  # Drop the last character only when the cut left it incomplete.
-  [ "$c" -eq "$need" ] || s=${t%?}
-  printf '%s' "$s"
-)
-
-# Shorten one buffered item by at least <over> bytes and end it with a marker
-# naming the dropped byte count and, for a status-log event, the log that still
-# holds the full text.
-_escalation_item_truncate() (  # <item> <over-bytes> <source-status-log>
-  item=$1 over=$2 source=$3
-  LC_ALL=C
-  [ -z "$source" ] || source="; full text in $source"
-  # The marker is sized with the item's full length, which bounds the digits of
-  # the count actually dropped.
-  marker=" ... [+${#item} bytes truncated$source]"
-  keep=$(( ${#item} - over - ${#marker} ))
-  [ "$keep" -gt 0 ] || keep=0
-  head=$(_cut_bytes "$item" "$keep")
-  printf '%s ... [+%s bytes truncated%s]' "$head" "$(( ${#item} - ${#head} ))" "$source"
-)
-
-_escalation_digest() {  # <count> <joined-items>
-  printf 'Supervisor escalate (%s event(s)): %s (pre-read; re-arm not needed — watcher daemon-managed)' "$1" "$2"
-}
-
-# Flush the oldest buffered escalations that fit one inject as a single-line
-# digest to the supervisor pane. A first item too large to fit alone is
-# truncated, so every flush delivers at least one item. Returns 0 on successful
-# inject (or empty buffer) after removing only the delivered lines, non-zero on
+# Flush the escalation buffer as ONE batched, single-line digest to the
+# supervisor pane. Returns 0 on successful inject (or empty buffer), non-zero on
 # inject failure (buffer preserved for retry / catch-up).
 escalate_flush() {  # <state>
-  local state=$1 buf budget envelope envelope_bytes record source item joined='' try msg='' over taken=0
+  local state=$1 buf item n msg
   buf="$state/.subsuper-escalations"
   [ -s "$buf" ] || return 0
-  [ -f "$buf" ] || return 1
-  budget=$INJECT_MAX_BYTES
-  # inject_msg wraps the digest in the typed envelope, which counts too.
-  fm_operational_input_encode away-supervisor x envelope || return 1
-  envelope_bytes=$(( $(_byte_len "$envelope") - 1 ))
-  while IFS= read -r record || [ -n "$record" ]; do
-    source=
-    item=$record
-    if [[ $record == @status-log=*$'\t'* ]]; then
-      source=${record%%$'\t'*}
-      source=${source#@status-log=}
-      item=${record#*$'\t'}
-    fi
-    try=$(_escalation_digest "$((taken + 1))" "${joined:+$joined | }$item")
-    over=$(( envelope_bytes + $(_byte_len "$try") - budget ))
-    if [ "$over" -gt 0 ]; then
-      [ "$taken" -eq 0 ] || break
-      item=$(_escalation_item_truncate "$item" "$over" "$source")
-      try=$(_escalation_digest 1 "$item")
-    fi
-    # Join items with the literal " | " separator into one digest line.
-    joined=${joined:+$joined | }$item
-    msg=$try
-    taken=$((taken + 1))
-  done < "$buf"
-  inject_msg "$msg" "$state" || return 1
-  if ! tail -n +"$((taken + 1))" "$buf" > "${buf}.tmp" 2>/dev/null; then
-    rm -f "${buf}.tmp"
-    log "inject delivered but escalation buffer update failed: remainder copy"
-    return 1
-  fi
-  if ! mv -f "${buf}.tmp" "$buf"; then
-    rm -f "${buf}.tmp"
-    log "inject delivered but escalation buffer update failed: remainder replacement"
-    return 1
-  fi
-  # Delivery works again, so the max-defer clock restarts for any remainder and
-  # the next batch goes after the normal batch window.
-  if [ -s "$buf" ]; then _now > "${buf}.since"; else rm -f "${buf}.since"; fi
-  rm -f "$state/.subsuper-inject-wedged"
-  return 0
+  n=$(wc -l < "$buf" 2>/dev/null || echo 0)
+  # Join buffered items with the literal " | " separator into one digest line.
+  msg=$(awk 'NR>1{printf " | "} {printf "%s",$0} END{print ""}' "$buf" 2>/dev/null)
+  # Single-line wrapper: no embedded newlines (inject_msg also collapses as a
+  # safety net, but keeping the source single-line makes the intent explicit).
+  msg=$(printf 'Supervisor escalate (%s event(s)): %s (pre-read; re-arm not needed — watcher daemon-managed)' "$n" "$msg")
+  if inject_msg "$msg" "$state"; then : > "$buf"; rm -f "${buf}.since" "$state/.subsuper-inject-wedged"; return 0; fi
+  return 1
 }
 
 # --- backend-independent active wedge alert ---------------------------------
@@ -1289,7 +1185,7 @@ housekeeping() {  # <state>
         ident=$(status_observed_signature "$f")
         status_presentation_marker_reported_matches "$(_seen_status_path "$state" "$task")" "$ident" \
           && continue
-        if escalate_add "$state" "$(basename "$f"): unreadable status span (catch-all scan)" "$f"; then
+        if escalate_add "$state" "$(basename "$f"): unreadable status span (catch-all scan)"; then
           status_presentation_marker_report "$(_seen_status_path "$state" "$task")" "$ident" || true
         fi
         continue
@@ -1299,11 +1195,11 @@ housekeeping() {  # <state>
       rest=${record#*$'\t'}; ident=${rest%%$'\t'*}
       if [ "$rc" -eq 0 ]; then
         event=${rest#*$'\t'}
-        if escalate_add "$state" "$(basename "$f"): $event (catch-all scan)" "$f"; then
+        if escalate_add "$state" "$(basename "$f"): $event (catch-all scan)"; then
           mark_status_seen "$state" "$task" "$endpoint" "$ident" || true
         fi
       elif ! mark_status_seen "$state" "$task" "$endpoint" "$ident"; then
-        escalate_add "$state" "$(basename "$f"): status position commit failed (catch-all scan)" "$f"
+        escalate_add "$state" "$(basename "$f"): status position commit failed (catch-all scan)"
       fi
     done
   fi
@@ -1400,11 +1296,7 @@ inject_msg() {  # <message> [state]
   if [ "$verdict" = empty ]; then
     return 0  # Backend confirmed the submit.
   fi
-  if [ "$verdict" = send-failed ]; then
-    log "inject failed: backend text send or submit key failed (verdict=send-failed, $(_byte_len "$msg") bytes, text may be in composer)"
-  else
-    log "inject failed: submit unconfirmed after $retries retries (verdict=$verdict, $(_byte_len "$msg") bytes, text may be in composer)"
-  fi
+  log "inject failed: submit unconfirmed after $retries retries (verdict=$verdict, text may be in composer)"
   return 1
 }
 
@@ -1443,9 +1335,8 @@ is_wake_reason() {  # <reason>
 # is populated, suppression markers commit, and the digest names the decision
 # instead of "unknown wake:".
 handle_wake() {  # <reason> <state>
-  local reason=$1 state=$2 decision action distilled task last stale_detail source='' item buffered
+  local reason=$1 state=$2 decision action distilled task last stale_detail
   local capture="$state/.subsuper-classified-end.$$" span_record='' span_rc='' endpoint ident rest sig marker
-  local items_file="$state/.subsuper-classified-items.$$"
   local kind="" arg="" classification_failed=0 span_failure_repeat=0
   : > "$capture" || return 1
   if should_force_self "$reason"; then
@@ -1460,9 +1351,7 @@ handle_wake() {  # <reason> <state>
                 needs-decision:*) arg="${reason#needs-decision: }" ;;
                 *) arg="${reason#signal: }" ;;
               esac
-              : > "$items_file" || { rm -f "$capture"; return 1; }
-              decision=$(FM_STATUS_SPAN_ENDPOINT_FILE="$capture" FM_ESCALATION_ITEMS_FILE="$items_file" classify_signal "$arg" "$state") \
-                || { rm -f "$capture" "$items_file"; return 1; } ;;
+              decision=$(FM_STATUS_SPAN_ENDPOINT_FILE="$capture" classify_signal "$arg" "$state") ;;
     stale:*)  kind=stale; arg="${reason#stale: }"; stale_detail="${arg#"$arg"}"
               case "$arg" in *" ("*) stale_detail="${arg#*" ("}"; arg="${arg%% \(*}" ;; esac
               task=$(window_to_task "$arg" "$state")
@@ -1492,7 +1381,6 @@ handle_wake() {  # <reason> <state>
                 decision="self|unreadable status span already reported for $task"
               else
                 decision=$(classify_stale "$arg" "$state" "$span_record" "$span_rc")
-                [ "$span_rc" != 0 ] || source="$state/$task.status"
               fi
               # An enriched wedge reason carries the watcher's own escalation count
               # and its "do not re-absorb on the run-step/pane state alone" demand,
@@ -1509,10 +1397,8 @@ handle_wake() {  # <reason> <state>
                 *) case "$stale_detail" in
                      idle\ *s,\ possible\ wedge,\ escalation\ *)
                        last=$(last_status_line "$state/$task.status")
-                       if ! status_is_paused_or_captain_held "$last"; then
-                         decision="escalate|${reason#stale: }"
-                         source=
-                       fi
+                       status_is_paused_or_captain_held "$last" \
+                         || decision="escalate|${reason#stale: }"
                        ;;
                    esac ;;
               esac ;;
@@ -1531,16 +1417,7 @@ handle_wake() {  # <reason> <state>
   case "$action" in
     escalate)
       log "escalate: $reason -> $distilled"
-      buffered=0
-      if [ "$kind" = signal ]; then
-        while IFS=$'\t' read -r source item; do
-          escalate_add "$state" "$item" "$source" || { buffered=1; break; }
-        done < "$items_file"
-        [ -s "$items_file" ] || buffered=1
-      else
-        escalate_add "$state" "$distilled" "$source" || buffered=1
-      fi
-      if [ "$buffered" -eq 0 ]; then
+      if escalate_add "$state" "$distilled"; then
         # A terminal-stale escalate must not leave a persistence marker behind, or
         # housekeeping re-escalates the same pane as a false wedge later.
         [ "$kind" = "stale" ] && stale_marker_remove "$arg" "$state"
@@ -1596,7 +1473,7 @@ handle_wake() {  # <reason> <state>
   if [ "$action" = self ] && { [ "$kind" = signal ] || [ "$kind" = stale ]; }; then
     mark_escalated_seen "$state" "$capture" || classification_failed=1
   fi
-  rm -f "$capture" "$items_file"
+  rm -f "$capture"
   [ "$classification_failed" -eq 0 ]
 }
 

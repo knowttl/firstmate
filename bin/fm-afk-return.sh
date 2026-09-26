@@ -688,15 +688,7 @@ EOF
     append_evidence wedge "$wedge" "$evidence"
   fi
   if [ -s "$STATE/.subsuper-escalations" ]; then
-    escalations=$(
-      while IFS= read -r record || [ -n "$record" ]; do
-        if [[ $record == @status-log=*$'\t'* ]]; then
-          printf '%s\n' "${record#*$'\t'}"
-        else
-          printf '%s\n' "$record"
-        fi
-      done < "$STATE/.subsuper-escalations"
-    )
+    escalations=$(cat "$STATE/.subsuper-escalations" 2>/dev/null || true)
     append_evidence escalation "$escalations" "$evidence"
   fi
 

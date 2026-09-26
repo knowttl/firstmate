@@ -523,57 +523,9 @@ test_scenario_d_max_defer() {
   pass "real herdr Scenario D: a persistently pending composer raises the max-defer wedge alarm, preserves the buffer, and never crashes the daemon"
 }
 
-# --- Scenario E: oversized backlog and a misleading status excerpt ----------
-# Exercise the incident's large buffered send on the real Herdr transport. A
-# status may quote another existing status filename without creating a second
-# event or changing the recovery pointer for its own truncated text.
-test_scenario_e_bounded_backlog() {
-  local big excerpt line text bytes injections
-  reset_state
-  big=$(head -c 150000 /dev/zero | tr '\0' 'x')
-  excerpt=$(head -c 2000 /dev/zero | tr '\0' 'z')
-  printf 'working: routine\n' > "$STATE_DIR/b.status"
-  : > "$STATE_DIR/big.status"
-  escalate_add "$STATE_DIR" "event A: done: PR https://example.test/pr/401"
-  escalate_add "$STATE_DIR" "big.status: done: $big" "$STATE_DIR/big.status"
-  escalate_add "$STATE_DIR" "event B: done: PR https://example.test/pr/402"
-  afk_enter "$STATE_DIR"
-  start_daemon
-  printf 'needs-decision [key=choose]: inspect excerpt | b.status: %s\n' "$excerpt" > "$STATE_DIR/a.status"
-  sleep 20
-
-  [ ! -s "$STATE_DIR/.subsuper-escalations" ] \
-    || fail "Scenario E: Herdr backlog did not drain: $(tail -3 "$STATE_DIR/.supervise-daemon.log")"
-  injections=$(grep -c $'\tinjection$' "$LOG_FILE" || true)
-  [ "$injections" -ge 2 ] || fail "Scenario E: expected multiple Herdr submissions, got $injections"
-  grep -F 'event A: done: PR https://example.test/pr/401' "$LOG_FILE" >/dev/null \
-    || fail "Scenario E: oldest event was not delivered"
-  grep -F "full text in $STATE_DIR/big.status]" "$LOG_FILE" >/dev/null \
-    || fail "Scenario E: 150 KB event lost its status-log pointer"
-  grep -F 'event B: done: PR https://example.test/pr/402' "$LOG_FILE" >/dev/null \
-    || fail "Scenario E: later event was not delivered"
-  grep -F "full text in $STATE_DIR/a.status]" "$LOG_FILE" >/dev/null \
-    || fail "Scenario E: quoted b.status changed the a.status recovery pointer"
-  grep -F "full text in $STATE_DIR/b.status]" "$LOG_FILE" >/dev/null \
-    && fail "Scenario E: quoted b.status became a false event"
-  while IFS= read -r line; do
-    text=$(printf '%s' "$line" | cut -f2)
-    bytes=$(LC_ALL=C; printf '%s' "${#text}")
-    [ "$bytes" -le 1000 ] || fail "Scenario E: Herdr submission was $bytes bytes"
-    printf 'Herdr submitted (%s bytes): %s\n' "$bytes" "$text"
-  done < "$LOG_FILE"
-  grep -q 'inject failed' "$STATE_DIR/.supervise-daemon.log" \
-    && fail "Scenario E: Herdr refused a bounded digest"
-
-  printf 'real Herdr submitted %s bounded digests; oldest and later events arrived; truncated a.status pointed to itself\n' "$injections"
-  stop_daemon
-  pass "real herdr Scenario E: oversized backlog drains and a quoted existing status stays one event"
-}
-
 test_scenario_a
 test_scenario_b
 test_scenario_c
-test_scenario_e_bounded_backlog
 test_scenario_d_max_defer
 
 echo "all real-herdr afk injection e2e tests passed"
