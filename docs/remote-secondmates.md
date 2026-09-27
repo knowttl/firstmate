@@ -85,6 +85,7 @@ Linux uses the same queue and worker protocol without the Aqua-session requireme
 On Linux, where `/proc/<pid>/stat` is readable, the worker uses kernel start ticks for process identity so host clock steps do not make a healthy worker appear stale.
 During an upgrade, a worker with an older `ps lstart` lock record is recognized by its PID and exact command and replaced when its code changes; [`bin/fm-remote-job-lib.sh`](../bin/fm-remote-job-lib.sh) owns that identity contract.
 If a worker loses its ownership lock, a stop signal still stops its active execution and exits without quarantining the new owner's lock.
+When idle, the worker checks for newly staged work about once per second; after a lane starts or finishes it checks more frequently for a short period.
 
 ### Job lanes and preemption
 
@@ -93,7 +94,7 @@ The worker serves one lane per staged home:
 - Jobs for the same home follow the staging-order contract owned by [`bin/fm-remote-job-lib.sh`](../bin/fm-remote-job-lib.sh).
 - Different homes' lanes run concurrently, so one home's long job never delays another home's commands.
 
-Within a home's lane, the worker preempts a running reply long-poll as soon as any command other than another reply long-poll is queued for that home.
+Within a home's lane, the worker preempts a running reply long-poll on its next queue check when any command other than another reply long-poll is queued for that home.
 As a result, interactive commands and startup checks are never serialized behind a poll window.
 
 `bin/fm-remote-job-lib.sh` owns that preemption contract.
