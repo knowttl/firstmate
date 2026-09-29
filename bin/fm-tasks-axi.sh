@@ -137,11 +137,4 @@ else
 fi
 
 cd "$FM_BACKLOG_AXI_ROOT" || fail "cannot enter the backlog root $FM_BACKLOG_AXI_ROOT"
-case "${ARGS[0]:-}" in
-  done|unhold|hold|block|unblock|start)
-    tasks-axi ${ARGS[@]+"${ARGS[@]}"} || exit $?
-    FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" \
-      "$SCRIPT_DIR/fm-ready-work.sh" wake || true
-    ;;
-  *) exec tasks-axi ${ARGS[@]+"${ARGS[@]}"} ;;
-esac
+exec tasks-axi ${ARGS[@]+"${ARGS[@]}"}

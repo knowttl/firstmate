@@ -727,23 +727,6 @@ test_teardown_closes_the_backlog_item_itself() {
   pass "teardown closes its own backlog item before reporting success"
 }
 
-test_teardown_wakes_the_work_its_close_unblocked() {
-  local case_dir
-  case_dir=$(make_case tasks-axi-unblocked)
-  write_meta "$case_dir" no-mistakes ship
-  seed_backlog_in_flight "$case_dir"
-  tasks-axi add dep-y1 "phase two" --file "$case_dir/data/backlog.md" >/dev/null
-  tasks-axi block dep-y1 --by task-x1 --file "$case_dir/data/backlog.md" >/dev/null
-  run_teardown "$case_dir" >/dev/null || fail "teardown failed with a gated dependent"
-  grep -F 'check: ready-work: dep-y1' "$case_dir/state/.wake-queue" >/dev/null \
-    || fail "teardown did not queue a wake for its dependent"
-  FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
-    FM_CONFIG_OVERRIDE="$case_dir/config" "$ROOT/bin/fm-ready-work.sh" wake
-  [ "$(grep -Fc 'check: ready-work: dep-y1' "$case_dir/state/.wake-queue")" = 1 ] \
-    || fail "work teardown already woke was queued again"
-  pass "teardown queues a durable wake for the work its close unblocked"
-}
-
 test_teardown_manual_backend_leaves_the_backlog_to_the_operator() {
   local case_dir out backlog_path
   case_dir=$(make_case tasks-axi-manual-optout)
@@ -4269,7 +4252,6 @@ test_forced_secondmate_own_missing_adapter_sibling_refuses_before_child_cleanup
 test_retained_sources_still_reach_the_ordinary_refusal
 test_local_only_fork_remote_allows
 test_teardown_closes_the_backlog_item_itself
-test_teardown_wakes_the_work_its_close_unblocked
 test_teardown_manual_backend_leaves_the_backlog_to_the_operator
 test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
