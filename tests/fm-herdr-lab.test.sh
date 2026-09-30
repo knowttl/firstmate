@@ -479,20 +479,28 @@ SH
   FM_FAKE_CLOCK_STEP="$step" PATH="$viewer_bin:$PATH" \
     python3 "$ROOT/bin/fm-herdr-lab-viewer.py" "$name" "$record" >/dev/null 2>&1 &
   launcher_pid=$!
+  # The launcher terminates and reaps its viewer, including before recording it.
+  trap 'kill -TERM "$launcher_pid" 2>/dev/null || true; wait "$launcher_pid" 2>/dev/null || true; fm_test_cleanup' EXIT
   while [ ! -f "$record" ]; do
     kill -0 "$launcher_pid" 2>/dev/null || fail "the viewer launcher exited before recording its pair"
     "$REAL_SLEEP" 0.01
   done
   viewer_pid=$(sed -n 's/^viewer_pid=//p' "$record")
 
+  launcher_lstart=$(fm_herdr_lab_process_lstart "$launcher_pid")
+  viewer_lstart=$(fm_herdr_lab_process_lstart "$viewer_pid")
   : > "$step"
+  assert_not_equals "$launcher_lstart" \
+    "$(FM_FAKE_CLOCK_STEP="$step" PATH="$viewer_bin:$PATH" fm_herdr_lab_process_lstart "$launcher_pid")" \
+    "the clock step did not change the launcher's legacy identity"
+  assert_not_equals "$viewer_lstart" \
+    "$(FM_FAKE_CLOCK_STEP="$step" PATH="$viewer_bin:$PATH" fm_herdr_lab_process_lstart "$viewer_pid")" \
+    "the clock step did not change the viewer's legacy identity"
   pair=$(FM_FAKE_CLOCK_STEP="$step" PATH="$viewer_bin:$PATH" run_with_fake fm_herdr_lab_viewer_owned_pair "$name") \
     || fail "a host clock step disowned the running lab viewer"
   assert_equals "$launcher_pid $viewer_pid" "$pair" "the stepped ownership check named the wrong pair"
 
   rm -f "$step"
-  launcher_lstart=$(fm_herdr_lab_process_lstart "$launcher_pid")
-  viewer_lstart=$(fm_herdr_lab_process_lstart "$viewer_pid")
   printf 'launcher_pid=%s\nlauncher_start=%s\nviewer_pid=%s\nviewer_start=%s\n' \
     "$launcher_pid" "$launcher_lstart" "$viewer_pid" "$viewer_lstart" > "$record"
   run_with_fake fm_herdr_lab_viewer_owned_alive "$name" \
@@ -500,6 +508,7 @@ SH
 
   kill -TERM "$launcher_pid" 2>/dev/null || true
   wait "$launcher_pid" 2>/dev/null || true
+  trap fm_test_cleanup EXIT
   kill -0 "$viewer_pid" 2>/dev/null && fail "the launcher left its viewer running"
   rm -f "$record"
   pass "fm-herdr-lab: viewer ownership survives a host clock step and keeps legacy records"
