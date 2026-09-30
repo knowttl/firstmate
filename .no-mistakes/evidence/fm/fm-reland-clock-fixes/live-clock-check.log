@@ -1,0 +1,30 @@
+ready worker pid=1443127 identity=starttime=31478212
+wrong start ticks rejected for the live worker
+unrelated command rejected even with a legacy start record
+baseline rejects the still-running owner with a drifted legacy record
+current code recognizes the same live legacy owner
+ensure 1 kept worker pid=1443127
+ensure 2 kept worker pid=1443127
+ensure 3 kept worker pid=1443127
+ensure 4 kept worker pid=1443127
+supervisor count after repeated ensure=1
+job exit=0
+schema=fm-remote-delta.v1
+status=delta
+path=state/replies.log
+from_offset=0
+to_offset=29
+from_prefix_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+to_prefix_sha256=e2662b5f4ee32c73b2af4accddeff00ec0481b974d2a0352ef94f7048c752ca5
+payload_sha256=e2662b5f4ee32c73b2af4accddeff00ec0481b974d2a0352ef94f7048c752ca5
+payload_bytes=29
+reason=
+
+clock recovery job completed
+legacy ps sender identity changes when ps renders a clock step
+live sender identity=proc-starttime=31478620 cmdline-hex=736c6565700031323000 phase=recovery_sending
+legacy ps sender record still recognizes the real live process
+mismatched sender identity rejected
+check: rearm-resurface
+dead sender outcome=unknown phase=escalated
+worker tree stopped through the product cleanup interface

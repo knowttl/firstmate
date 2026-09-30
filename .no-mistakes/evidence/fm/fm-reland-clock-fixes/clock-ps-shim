@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -e
+out=$("$FM_CLOCK_REAL_PS" "$@")
+case " $* " in
+  *' lstart= '*)
+    if [ -e "$FM_CLOCK_STEP" ]; then out="clock-stepped $out"; fi
+    ;;
+esac
+printf '%s\n' "$out"
