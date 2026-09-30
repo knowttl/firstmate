@@ -33,7 +33,7 @@
 # Start succeeds only when that session reports a foreground client and the
 # recorded viewer process still matches its launch identity.
 # When /proc stat is readable, the viewer records start ticks for both processes;
-# existing ps lstart records remain readable for a running viewer.
+# otherwise it records ps lstart, and existing ps lstart records remain readable.
 # Stop signals only identity-matched recorded processes and retains its
 # ownership record until detach is confirmed or the session is stopped or
 # absent; teardown refuses when that stop cannot be confirmed.
@@ -211,8 +211,8 @@ fm_herdr_lab_viewer_reason() { # <session>
 
 # Prints the process start identity the viewer launcher records. /proc stat
 # field 22 counts clock ticks since boot, so a host clock step cannot change it;
-# ps lstart re-renders those ticks against the wall-clock boot time (WSL2 steps
-# it about every 30 seconds) and would disown a running viewer.
+# ps lstart re-renders those ticks against the wall-clock boot time and would
+# disown a running viewer after a clock step.
 fm_herdr_lab_process_start() { # <pid>
   local stat_line starttime
   local -a stat_fields
