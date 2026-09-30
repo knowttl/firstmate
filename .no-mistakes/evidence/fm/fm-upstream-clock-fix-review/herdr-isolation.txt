@@ -1,0 +1,20 @@
+Attempt 1: HERDR_CONFIG_PATH pointed at a disposable worktree config and
+FM_HERDR_LAB_STATE_DIR pointed at a disposable worktree directory.
+bin/fm-herdr-lab.sh prepare fm-lab-clock-gate succeeded.
+bin/fm-herdr-lab.sh run fm-lab-clock-gate session list --json showed that session
+directories still resolved under /home/brytton/.config/herdr/sessions.
+No session was provisioned, because doing so would intentionally write outside
+the permitted worktree boundary. Only a worktree tripwire file was created.
+
+Attempt 2: XDG_CONFIG_HOME pointed at $PWD/.test-clock-lab/xdg.
+bin/fm-herdr-lab.sh prepare fm-lab-clock-isolated returned:
+fm-herdr-lab: fleet-state tripwire requires exactly one running default session
+The scoped session list confirmed a default session with running=false and both
+session_dir and socket_path under the disposable worktree XDG directory.
+The runbook prohibits starting or touching default sessions, so provisioning an
+isolated default server to satisfy the tripwire was not attempted.
+
+No live viewer was launched. No lab server or external session state was created.
+Live proof needs either permission for named lab session writes under Herdr's
+normal session root, or a supported lab-helper isolation route that does not
+require starting a default server inside the disposable root.

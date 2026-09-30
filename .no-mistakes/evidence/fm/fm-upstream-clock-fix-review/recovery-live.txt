@@ -1,0 +1,15 @@
+Command: env TMPDIR="$PWD/.test-clock-lab/tmp" bash .test-clock-lab/live.sh
+The driver sourced the production pending-reply library, started a real sleep process,
+created disposable pending-reply records using the production record API, and drove
+fm_pending_reply_tick_one with real /proc and ps identities. No sender or product stub.
+
+real sender pid=200907 identity=proc-starttime=32045902 cmdline-hex=736c6565700033303000
+current Linux identity: phase=recovery_sending
+legacy ps identity: phase=recovery_sending
+mismatched start ticks: phase=escalated
+mismatched command: phase=escalated
+sender exited: phase=escalated
+
+The driver additionally asserted recovery_delivery_outcome=unknown in all three
+rejected-sender cases. Exit status: 0. The sender was stopped and reaped.
+This validates reconciliation against real processes, not an actual host clock step.
