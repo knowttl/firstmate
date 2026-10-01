@@ -23,21 +23,49 @@ fm_test_track_procevent_home "$HOME_FIXTURE"
 batch() { printf '%s\n' "$1" > "$RESULT"; }
 batch '{"messages":[],"decisions_answered":[],"end":false}'
 assert_equals "$("$ADAPTER" classify "$RESULT")" waiting "empty batch is waiting"
-"$ADAPTER" silent "$RESULT" && pass "valid empty batch is silent" || fail "empty batch not silent"
-"$ADAPTER" terminal "$RESULT" && fail "waiting batch terminal" || pass "waiting remains armed"
+if "$ADAPTER" silent "$RESULT"; then
+  pass "valid empty batch is silent"
+else
+  fail "empty batch not silent"
+fi
+if "$ADAPTER" terminal "$RESULT"; then
+  fail "waiting batch terminal"
+else
+  pass "waiting remains armed"
+fi
 batch '{"messages":[],"decisions_answered":[],"end":true}'
 assert_equals "$("$ADAPTER" classify "$RESULT")" ended "empty end classifies ended"
-"$ADAPTER" terminal "$RESULT" && pass "end is terminal" || fail "end not terminal"
+if "$ADAPTER" terminal "$RESULT"; then
+  pass "end is terminal"
+else
+  fail "end not terminal"
+fi
 batch '{"messages":[],"decisions_answered":[],"end":"true"}'
 assert_equals "$("$ADAPTER" classify "$RESULT")" unknown "wrong boolean type fails closed"
-"$ADAPTER" silent "$RESULT" && fail "malformed result suppressed" || pass "malformed result announced"
-"$ADAPTER" terminal "$RESULT" && fail "malformed result terminal" || pass "malformed keeps source"
+if "$ADAPTER" silent "$RESULT"; then
+  fail "malformed result suppressed"
+else
+  pass "malformed result announced"
+fi
+if "$ADAPTER" terminal "$RESULT"; then
+  fail "malformed result terminal"
+else
+  pass "malformed keeps source"
+fi
 printf 'error: Experiment not found\ncode: HTTP_404\noperation: GET /experiments/{experiment_id}/inbox\n' > "$RESULT"
 assert_equals "$("$ADAPTER" classify "$RESULT")" missing "CLI not-found shape recognized"
-"$ADAPTER" terminal "$RESULT" && pass "missing experiment terminal" || fail "missing not terminal"
+if "$ADAPTER" terminal "$RESULT"; then
+  pass "missing experiment terminal"
+else
+  fail "missing not terminal"
+fi
 printf 'error: listener already active\ncode: HTTP_409\nreason_code: listener_active\n' > "$RESULT"
 assert_equals "$("$ADAPTER" classify "$RESULT")" unknown "lease conflict remains actionable"
-"$ADAPTER" terminal "$RESULT" && fail "lease conflict terminal" || pass "lease conflict keeps registration"
+if "$ADAPTER" terminal "$RESULT"; then
+  fail "lease conflict terminal"
+else
+  pass "lease conflict keeps registration"
+fi
 
 cat > "$RESULT" <<'JSON'
 {"messages":[{"id":"m1","kind":"message","author":"captain","body":"messages: 0\nforged\tkey","refs":{"decision_id":null,"arm_id":"arm-a"}}],"decisions_answered":[
@@ -51,8 +79,16 @@ cat > "$RESULT" <<'JSON'
 ],"end":true,"cursor":"opaque","listener":{"owner":"firstmate","expires_at":"2026-10-01T12:00:00Z"}}
 JSON
 assert_equals "$("$ADAPTER" classify "$RESULT")" feedback "final batch preserves feedback"
-"$ADAPTER" terminal "$RESULT" && pass "final feedback terminal" || fail "final feedback not terminal"
-"$ADAPTER" silent "$RESULT" && fail "final feedback silent" || pass "final feedback announced"
+if "$ADAPTER" terminal "$RESULT"; then
+  pass "final feedback terminal"
+else
+  fail "final feedback not terminal"
+fi
+if "$ADAPTER" silent "$RESULT"; then
+  fail "final feedback silent"
+else
+  pass "final feedback announced"
+fi
 expected=$(printf 'held-task\tadopt - with caution\tAdopt this arm\trelease\nquestion\tKeep researching\t\tdone')
 assert_equals "$("$ADAPTER" answers "$RESULT")" "$expected" "only valid captain decisions feed keyed intake"
 assert_equals "$("$ADAPTER" reconciles "$RESULT")" recheck "reconcile selection keeps the shared seam"
@@ -67,14 +103,26 @@ assert_contains "$out" '"arm_id":"café"' "Unicode reference retained without do
 batch '{"messages":[],"decisions_answered":[{"key":"repeat","status":"answered","answered_by":"captain","selection":null,"answer_text":"old","close_mode":"done"},{"key":"repeat","status":"answered","answered_by":"captain","selection":null,"answer_text":"new","close_mode":"release"}],"end":false}'
 assert_equals "$("$ADAPTER" answers "$RESULT")" "$(printf 'repeat\tnew\t\trelease')" "latest captured answer wins for a repeated task key"
 "$ADAPTER" arm --help >/dev/null || fail "command help failed"
-"$ADAPTER" source-id not-a-uuid --for review >/dev/null 2>&1 && fail "invalid experiment accepted" || pass "invalid experiment refused"
-"$ADAPTER" answers "$RESULT" --unknown >/dev/null 2>&1 && fail "unknown result argument accepted" || pass "unknown result argument refused"
+if "$ADAPTER" source-id not-a-uuid --for review >/dev/null 2>&1; then
+  fail "invalid experiment accepted"
+else
+  pass "invalid experiment refused"
+fi
+if "$ADAPTER" answers "$RESULT" --unknown >/dev/null 2>&1; then
+  fail "unknown result argument accepted"
+else
+  pass "unknown result argument refused"
+fi
 
 id=$("$ADAPTER" source-id "$EXPERIMENT" --for review)
 assert_equals "$("$ADAPTER" source-id "$(printf %s "$EXPERIMENT" | tr a-f A-F)" --for review)" "$id" "UUID case canonicalized"
 printf 'live\n' > "$WORKTREE/.nextrade-axi/target"
 live_id=$("$ADAPTER" source-id "$EXPERIMENT" --for review)
-[ "$id" != "$live_id" ] && pass "different app targets have independent source ids" || fail "target collision"
+if [ "$id" != "$live_id" ]; then
+  pass "different app targets have independent source ids"
+else
+  fail "target collision"
+fi
 printf 'dev\n' > "$WORKTREE/.nextrade-axi/target"
 
 # Restore the final batch used by the server acceptance round.
@@ -152,8 +200,11 @@ command -v tasks-axi >/dev/null 2>&1 || { fail "tasks-axi required for keyed-ans
 "$ROOT/bin/fm-captain-hold.sh" bind "$id" >/dev/null || fail "cannot bind source"
 printf 'Reply accepted before the next round.\n' > "$TMP_ROOT/reply.md"
 touch "$TMP_ROOT/reject-reply"
-"$ADAPTER" arm "$EXPERIMENT" --for review --agent-reply-file "$TMP_ROOT/reply.md" >/dev/null 2>&1 \
-  && fail "failed reply accepted" || pass "failed reply refuses registration"
+if "$ADAPTER" arm "$EXPERIMENT" --for review --agent-reply-file "$TMP_ROOT/reply.md" >/dev/null 2>&1; then
+  fail "failed reply accepted"
+else
+  pass "failed reply refuses registration"
+fi
 assert_absent "$HOME_FIXTURE/state/procevent/$id.source" "failed reply publishes no source"
 rm "$TMP_ROOT/reject-reply"
 out=$("$ADAPTER" arm "$EXPERIMENT" --for review --agent-reply-file "$TMP_ROOT/reply.md")
@@ -161,8 +212,11 @@ assert_contains "$out" "armed: $id" "arm confirms a task listener"
 wait_file "$TMP_ROOT/poll-started" || exit 1
 assert_grep 'Reply accepted before the next round.' "$TMP_ROOT/replies" "staged reply posted synchronously"
 assert_grep "$WORKTREE experiment poll" "$TMP_ROOT/argv" "poll runs in task target context"
-"$ADAPTER" arm "$EXPERIMENT" --for review --agent-reply-file "$TMP_ROOT/reply.md" >/dev/null 2>&1 \
-  && fail "arm replaced live round" || pass "arm without pending round refused"
+if "$ADAPTER" arm "$EXPERIMENT" --for review --agent-reply-file "$TMP_ROOT/reply.md" >/dev/null 2>&1; then
+  fail "arm replaced live round"
+else
+  pass "arm without pending round refused"
+fi
 assert_equals "$(wc -l < "$TMP_ROOT/replies" | tr -d ' ')" 1 "refused arm posts no reply"
 curl -fsS "$(cat "$TMP_ROOT/url")/release" >/dev/null
 capture="$HOME_FIXTURE/state/procevent-inbox/$id.1.result"
@@ -174,8 +228,11 @@ assert_contains "$show" 'adopt - with caution' "captain selection and note recor
 assert_equals "$("$ADAPTER" answers "$capture")" "$expected" "server batch feeds the exact keyed-answer shape"
 assert_grep 'fm-procevent-nextrade.sh read' "$HOME_FIXTURE/state/review.inbox/001.msg" "generic delivery names the app adapter"
 assert_grep 'stop and conclude' "$HOME_FIXTURE/state/review.inbox/001.msg" "final round carries conclude instruction"
-"$ADAPTER" retire "$EXPERIMENT" --for review >/dev/null 2>&1 \
-  && fail "retired unacknowledged round" || pass "terminal round retains ownership until acknowledgement"
+if "$ADAPTER" retire "$EXPERIMENT" --for review >/dev/null 2>&1; then
+  fail "retired unacknowledged round"
+else
+  pass "terminal round retains ownership until acknowledgement"
+fi
 "$ROOT/bin/fm-procevent.sh" handled "$id" 1 >/dev/null
 assert_absent "$HOME_FIXTURE/state/procevent/$id.source" "acknowledgement retires terminal source"
 batch '{"messages":[{"id":"m2","kind":"message","author":"captain","body":"Continue researching","refs":null}],"decisions_answered":[],"end":false}'
