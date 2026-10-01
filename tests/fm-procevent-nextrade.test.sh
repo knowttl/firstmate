@@ -133,7 +133,7 @@ expected=$(printf 'held-task\tadopt - with caution\tAdopt this arm\trelease')
 
 # Fake the CLI boundary but exercise real loopback HTTP, including synchronous
 # reply acceptance, server-kept inbox delivery and the immutable generic capture.
-command -v node >/dev/null 2>&1 || { fail "node required for stub-server acceptance"; exit 1; }
+command -v node >/dev/null 2>&1 || fail "node required for stub-server acceptance"
 cat > "$TMP_ROOT/server.mjs" <<'JS'
 import http from 'node:http';
 import fs from 'node:fs';
@@ -189,12 +189,11 @@ server_pid=$!
 trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; fm_test_cleanup' EXIT
 wait_file() {
   local n
-  for n in $(seq 1 200); do [ ! -f "$1" ] || return 0; sleep 0.05; done
+  for ((n = 1; n <= 200; n++)); do [ ! -f "$1" ] || return 0; sleep 0.05; done
   fail "timed out waiting for fixture file $1"
-  return 1
 }
-wait_file "$TMP_ROOT/url" || exit 1
-command -v tasks-axi >/dev/null 2>&1 || { fail "tasks-axi required for keyed-answer acceptance"; exit 1; }
+wait_file "$TMP_ROOT/url"
+command -v tasks-axi >/dev/null 2>&1 || fail "tasks-axi required for keyed-answer acceptance"
 (cd "$HOME_FIXTURE" && tasks-axi add held-task "Apply the selected arm" --repo nextrade >/dev/null) || fail "cannot create held task"
 "$ROOT/bin/fm-captain-hold.sh" hold held-task --reason 'Choose the research arm' >/dev/null || fail "cannot hold task"
 "$ROOT/bin/fm-captain-hold.sh" bind "$id" >/dev/null || fail "cannot bind source"
@@ -209,7 +208,7 @@ assert_absent "$HOME_FIXTURE/state/procevent/$id.source" "failed reply publishes
 rm "$TMP_ROOT/reject-reply"
 out=$("$ADAPTER" arm "$EXPERIMENT" --for review --agent-reply-file "$TMP_ROOT/reply.md")
 assert_contains "$out" "armed: $id" "arm confirms a task listener"
-wait_file "$TMP_ROOT/poll-started" || exit 1
+wait_file "$TMP_ROOT/poll-started"
 assert_grep 'Reply accepted before the next round.' "$TMP_ROOT/replies" "staged reply posted synchronously"
 assert_grep "$WORKTREE experiment poll" "$TMP_ROOT/argv" "poll runs in task target context"
 if "$ADAPTER" arm "$EXPERIMENT" --for review --agent-reply-file "$TMP_ROOT/reply.md" >/dev/null 2>&1; then
@@ -220,7 +219,7 @@ fi
 assert_equals "$(wc -l < "$TMP_ROOT/replies" | tr -d ' ')" 1 "refused arm posts no reply"
 curl -fsS "$(cat "$TMP_ROOT/url")/release" >/dev/null
 capture="$HOME_FIXTURE/state/procevent-inbox/$id.1.result"
-wait_file "$HOME_FIXTURE/state/review.inbox/001.msg" || exit 1
+wait_file "$HOME_FIXTURE/state/review.inbox/001.msg"
 show=$(cd "$HOME_FIXTURE" && tasks-axi show held-task --full)
 assert_contains "$show" 'held: no' "captured app decision releases the bound held task"
 assert_contains "$show" 'Resolution mode: released' "release keeps the generic lifecycle owner"
@@ -238,17 +237,17 @@ assert_absent "$HOME_FIXTURE/state/procevent/$id.source" "acknowledgement retire
 batch '{"messages":[{"id":"m2","kind":"message","author":"captain","body":"Continue researching","refs":null}],"decisions_answered":[],"end":false}'
 rm "$TMP_ROOT/poll-started"
 "$ADAPTER" arm "$EXPERIMENT" --for review >/dev/null || fail "cannot start nonterminal review"
-wait_file "$TMP_ROOT/poll-started" || exit 1
+wait_file "$TMP_ROOT/poll-started"
 curl -fsS "$(cat "$TMP_ROOT/url")/release" >/dev/null
-wait_file "$HOME_FIXTURE/state/review.inbox/002.msg" || exit 1
+wait_file "$HOME_FIXTURE/state/review.inbox/002.msg"
 assert_grep 're-arm the review with the reply' "$HOME_FIXTURE/state/review.inbox/002.msg" "nonterminal delivery asks its worker to re-arm"
 rm "$TMP_ROOT/poll-started"
 "$ADAPTER" arm "$EXPERIMENT" --for review --agent-reply-file "$TMP_ROOT/reply.md" >/dev/null || fail "cannot re-arm a captured round"
 assert_present "$HOME_FIXTURE/state/procevent-inbox/$id.2.handled" "re-arm acknowledges the prior nonterminal round"
-wait_file "$TMP_ROOT/poll-started" || exit 1
+wait_file "$TMP_ROOT/poll-started"
 batch '{"messages":[],"decisions_answered":[],"end":true}'
 curl -fsS "$(cat "$TMP_ROOT/url")/release" >/dev/null
-wait_file "$HOME_FIXTURE/state/review.inbox/003.msg" || exit 1
+wait_file "$HOME_FIXTURE/state/review.inbox/003.msg"
 "$ROOT/bin/fm-procevent.sh" handled "$id" 3 >/dev/null || fail "cannot conclude final empty end"
 assert_absent "$HOME_FIXTURE/state/procevent/$id.source" "empty terminal round also concludes through generic acknowledgement"
 kill "$server_pid"
