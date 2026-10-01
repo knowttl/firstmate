@@ -9,6 +9,30 @@ The published reply handoff was verified on 2026-09-29 on macOS (Darwin 25.5.0) 
 The poll lifecycle was first verified on 2026-07-31 with 0.1.45; generic keyed-answer feed was verified on 2026-08-16, and cross-origin keyed-answer feed on 2026-08-19.
 Trusted external `process-event-adapter/1` binding conformance and the runnable `file-signal` example were verified on 2026-08-27 on macOS (Darwin 25.5.0) with Node v25.9.0.
 
+## Nextrade experiment adapter
+
+Verified on 2026-10-01 with Bash 5.2.21 and Node v24.17.0 against the `nextrade-axi` 0.1.0 source contract at Nextrade origin/main commit `78bf709b6568726a8d0405cef390dc2bf02c9973`.
+`tools/nextrade-axi/src/registry/experiment.ts`, `src/invoke.ts`, and the backend experiment messages and decisions routes provide the CLI and JSON shapes used by the loopback fixture.
+
+```sh
+bash bin/fm-test-run.sh tests/fm-procevent-nextrade.test.sh
+```
+
+```text
+all Nextrade adapter tests passed
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=12313
+```
+
+The fixture uses a real loopback HTTP server behind a fake `nextrade-axi` executable, not a live Nextrade stack.
+It proves task-target routing, synchronous reply acceptance, refusal without posting for an ineligible arm, failed-reply refusal, immutable generic capture, bound captain-hold release, direct steering-inbox delivery, and terminal ownership until acknowledgement.
+It also checks malformed-result announcement, lease-conflict preservation, UUID and target source identity, reconcile separation, and latest-answer extraction.
+The real decision CLI to Workspace-page answer round remains W4 acceptance once the Workspace page exists.
+
+Integration review inspected `bin/fm-procevent.sh`, `bin/fm-backend.sh`, and `bin/fm-supervision-instructions.sh`.
+Supported primaries (Claude, Codex, OpenCode, Pi, pi-signed, Grok, Cursor, and OMP, plus the unknown-primary fallback) retain the same existing wake continuation; task-owned delivery uses the existing backend endpoint validator and inbox doorbell for tmux, Herdr, Zellij, Orca, and cmux.
+Worker harnesses, including crewmate-only adapters, gain no launch or lifecycle change: the Nextrade adapter executes as a separate runner child, and its results use the task's existing inbox.
+No new harness-dependent signal or backend primitive is introduced.
+
 ## The published Lavish poll and reply interfaces
 
 The current published command surface includes a synchronous reply command in addition to the blocking poll:

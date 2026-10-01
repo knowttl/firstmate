@@ -1851,6 +1851,15 @@ This start-to-start governor is a no-op after a normally blocking poll but caps 
 Real feedback, ended and missing sessions, any other `SERVER_ERROR`, and that same interruption still standing once the bound is spent are all captured and announced normally; `FM_LAVISH_POLL_RETRY_DELAY` is a bounded 1 to 60 second test override for the interval only, and the runner itself stays adapter-agnostic.
 An already-armed Lavish source keeps its registered listener command until it is retired and armed again, so retire the source, then arm it again to adopt this retry policy.
 
+### Nextrade app-backed reviews
+
+`bin/fm-procevent-nextrade.sh` connects an experiment inbox to the existing task-owned review registration, capture, steering-inbox delivery, and acknowledgement path described below.
+Its header owns exact CLI commands, target identity, result classification, and keyed decision extraction.
+The hosting task's worktree must have a Nextrade target selected; the listener runs in that context with the selected target explicitly retained, rather than inheriting firstmate's current directory.
+Only the staged agent reply is posted by the adapter; decision creation and captain answers remain app operations.
+Captain-held tasks use the policy in `.agents/skills/captain-hold-lifecycle/SKILL.md`, with no separate app completion policy.
+The loopback-server regression is `tests/fm-procevent-nextrade.test.sh`; the real Workspace-page acceptance round belongs to the programme's W4 run once that page exists.
+
 ### Crew-hosted Lavish review boards
 
 **Arm and confirm a listener**

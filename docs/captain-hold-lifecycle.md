@@ -182,6 +182,7 @@ Only `answer` with the captain's words or evidence-backed `reconcile close` reso
 `answers` is its channel-agnostic entry point.
 It reads `<task-id>\t<answer>\t<label>[\t<mode>]` lines and resolves each named task through the same `answer` path.
 Every guard therefore applies identically no matter which channel the answer arrived on.
+App-backed experiment decisions enter through `bin/fm-procevent-nextrade.sh answers`; its header owns the response mapping, and `tests/fm-procevent-nextrade.test.sh` covers the CLI and loopback-server boundary.
 
 The optional mode column carries a card-declared close:
 
