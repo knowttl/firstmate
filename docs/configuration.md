@@ -1853,12 +1853,12 @@ An already-armed Lavish source keeps its registered listener command until it is
 
 ### Nextrade app-backed reviews
 
-`bin/fm-procevent-nextrade.sh` connects an experiment inbox to the existing task-owned review registration, capture, steering-inbox delivery, and acknowledgement path described below.
+`bin/fm-procevent-nextrade.sh` connects an experiment inbox to the existing task-owned review registration, capture, steering-inbox delivery, and acknowledgement path owned by the `bin/fm-procevent.sh` header.
 Its header owns exact CLI commands, target identity, result classification, and keyed decision extraction.
 The hosting task's worktree must have a Nextrade target selected; the listener runs in that context with the selected target explicitly retained, rather than inheriting firstmate's current directory.
 Only the staged agent reply is posted by the adapter; decision creation and captain answers remain app operations.
 Captain-held tasks use the policy in `.agents/skills/captain-hold-lifecycle/SKILL.md`, with no separate app completion policy.
-The loopback-server regression is `tests/fm-procevent-nextrade.test.sh`; the real Workspace-page acceptance round belongs to the programme's W4 run once that page exists.
+The [process-event verification record](verification/process-event-sources.md#nextrade-experiment-adapter) owns regression evidence and the deferred Workspace-page acceptance boundary.
 
 ### Crew-hosted Lavish review boards
 
