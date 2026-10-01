@@ -1,0 +1,19 @@
+Command: bash bin/fm-test-run.sh tests/fm-procevent-nextrade.test.sh tests/fm-captain-hold-lifecycle.test.sh tests/fm-procevent.test.sh
+
+FM_TEST_END 2026-10-01T16:19:47Z tests/fm-captain-hold-lifecycle.test.sh exit=0 duration_ms=440734 gate_skip=false
+FM_TEST_END 2026-10-01T16:20:00Z tests/fm-procevent-nextrade.test.sh exit=0 duration_ms=12542 gate_skip=false
+not ok - the listener under test was not reparented away from its session (ppid 1076)
+FM_TEST_END 2026-10-01T16:23:50Z tests/fm-procevent.test.sh exit=1 duration_ms=242543 gate_skip=false
+
+Read-only diagnosis: ps -p 1076 -o pid,ppid,args
+   1076       1 /usr/lib/systemd/systemd --user
+
+Workspace-isolated workaround: unshare --user --map-root-user --pid --fork --mount-proc true
+unshare: write failed /proc/self/uid_map: Operation not permitted
+
+Independent counterfactual probe: python3 /home/brytton/.no-mistakes/evidence/01M3W3HY36EH5FBN14VJDPAN4M/reparent-probe.py
+adopted orphan ppid: 1076
+
+The failing PID-1 assertion at tests/fm-procevent.test.sh:3834 predates this branch (git blame: b84e0e36, 2026-09-07).
+The live Nextrade scenarios passed; this failure prevents completing the requested shared-runner regression in the current host.
+No source or test files were modified, and all downloaded fixture directories and the disposable PostgreSQL server were removed or stopped.

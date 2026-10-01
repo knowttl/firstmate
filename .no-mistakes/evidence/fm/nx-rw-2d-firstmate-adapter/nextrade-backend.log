@@ -1,0 +1,42 @@
+INFO:     Started server process [1603343]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:55440 (Press CTRL+C to quit)
+INFO:     127.0.0.1:35272 - "GET /api/v1/catalog HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:35272 - "POST /api/v1/experiments HTTP/1.1" 201 Created
+INFO:     127.0.0.1:35274 - "POST /api/v1/experiments/cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd/decisions HTTP/1.1" 201 Created
+INFO:     127.0.0.1:35288 - "GET /api/v1/catalog HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:35288 - "POST /api/v1/experiments/cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd/messages HTTP/1.1" 201 Created
+INFO:     127.0.0.1:35294 - "GET /api/v1/experiments/cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd/messages?experiments=only HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35298 - "GET /api/v1/experiments/cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd/decisions/06e2fa88-6a62-4e41-b4e2-62c62bcb6ce7 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35314 - "POST /api/v1/experiments/cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd/decisions/06e2fa88-6a62-4e41-b4e2-62c62bcb6ce7/answer HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35326 - "GET /api/v1/catalog HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:35326 - "GET /api/v1/experiments/cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd/inbox?owner=firstmate&wait=270 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35332 - "GET /api/v1/experiments/cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd/decisions/06e2fa88-6a62-4e41-b4e2-62c62bcb6ce7 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35340 - "GET /api/v1/catalog HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:35340 - "POST /api/v1/experiments/cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd/messages HTTP/1.1" 201 Created
+INFO:     127.0.0.1:35342 - "POST /api/v1/experiments/cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd/session/end HTTP/1.1" 201 Created
+INFO:     127.0.0.1:35354 - "GET /api/v1/catalog HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:35354 - "GET /api/v1/experiments/cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd/inbox?owner=firstmate&wait=270 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60148 - "GET /api/v1/catalog HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:60148 - "POST /api/v1/experiments HTTP/1.1" 201 Created
+INFO:     127.0.0.1:60164 - "POST /api/v1/experiments/88745ca8-bb3c-46e8-a87d-d4dc890f898b/decisions HTTP/1.1" 201 Created
+INFO:     127.0.0.1:60174 - "POST /api/v1/experiments/88745ca8-bb3c-46e8-a87d-d4dc890f898b/decisions/7521ad79-49e0-4781-8ec9-0340d443744e/answer HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60188 - "POST /api/v1/experiments/88745ca8-bb3c-46e8-a87d-d4dc890f898b/decisions HTTP/1.1" 201 Created
+INFO:     127.0.0.1:60198 - "POST /api/v1/experiments/88745ca8-bb3c-46e8-a87d-d4dc890f898b/decisions/54e7c4ef-c3b7-46e7-8e39-1669437d0b8a/answer HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60214 - "POST /api/v1/experiments/88745ca8-bb3c-46e8-a87d-d4dc890f898b/decisions HTTP/1.1" 201 Created
+INFO:     127.0.0.1:60228 - "POST /api/v1/experiments/88745ca8-bb3c-46e8-a87d-d4dc890f898b/decisions/2bfde0e4-4cc7-4abc-8e1e-2ae95aab77c9/answer HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60230 - "POST /api/v1/experiments/88745ca8-bb3c-46e8-a87d-d4dc890f898b/messages HTTP/1.1" 201 Created
+INFO:     127.0.0.1:60238 - "POST /api/v1/experiments/88745ca8-bb3c-46e8-a87d-d4dc890f898b/session/end HTTP/1.1" 201 Created
+INFO:     127.0.0.1:60240 - "GET /api/v1/catalog HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:60240 - "GET /api/v1/experiments/88745ca8-bb3c-46e8-a87d-d4dc890f898b/inbox?owner=firstmate&wait=270 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60254 - "GET /api/v1/catalog HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:60254 - "POST /api/v1/experiments HTTP/1.1" 201 Created
+INFO:     127.0.0.1:60258 - "GET /api/v1/experiments/137f303d-3f95-40a3-9fba-4b9bd2997b21/inbox?owner=other-review&wait=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51020 - "GET /api/v1/catalog HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:51020 - "GET /api/v1/experiments/137f303d-3f95-40a3-9fba-4b9bd2997b21/inbox?owner=firstmate&wait=270 HTTP/1.1" 409 Conflict
+INFO:     127.0.0.1:51036 - "GET /api/v1/experiments/137f303d-3f95-40a3-9fba-4b9bd2997b21/listener HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1603343]

@@ -1,0 +1,399 @@
+$ bin/fm-lab-home.sh create /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/.test-nx-lab/home
+/home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/.test-nx-lab/home
+
+$ nextrade-axi experiment create --slug live-af99e8d9-bc07-45e8-a541-cfa77d91d30a --title Adapter review --json
+{"id":"cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd","slug":"live-af99e8d9-bc07-45e8-a541-cfa77d91d30a","title":"Adapter review","status":"active","kind":"free_form","keep":false,"board_url":null,"notes":null,"hypothesis":null,"lifecycle_phase":null,"best_arm_id":null,"holdout_from":null,"search_start":null,"search_end":null,"holdout_end":null,"created_at":"2026-10-01T16:20:12.889221+00:00","ended_at":null,"expires_at":"2026-10-15T16:20:12.896674+00:00"}
+
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-procevent-nextrade.sh source-id cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd --for review
+nextrade-af0a143a9e5a8d75a5c3133438ece230
+
+$ tasks-axi add held-task Apply selected research arm --repo nextrade
+ok: added held-task (repo nextrade) -> Queued
+task:
+  id: held-task
+  title: Apply selected research arm
+  state: queued
+  blocked: no
+  blocked_by: none
+  held: no
+  hold_reason: "-"
+  hold_kind: "-"
+  hold_until: "-"
+  kind: task
+  repo: nextrade
+  priority: "-"
+  created: 2026-10-01
+  closed: "-"
+  deps: none
+  links: none
+  body: ""
+help[2]:
+  - Run `tasks-axi start held-task` to move it to in flight
+  - Run `tasks-axi block held-task --by <other>` to record a dependency
+
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-captain-hold.sh hold held-task --reason Select the research arm
+held-task
+
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-captain-hold.sh bind nextrade-af0a143a9e5a8d75a5c3133438ece230
+bound: nextrade-af0a143a9e5a8d75a5c3133438ece230 -> (any)
+
+POST /experiments/cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd/decisions
+{"key": "held-task", "title": "Select arm", "explanation": "Choose the next research step", "options": [{"value": "adopt", "label": "Adopt café arm", "consequence": "Continue"}, {"value": "reject", "label": "Reject arm", "consequence": "Search again"}], "recommendation": "adopt", "example": "Continue the selected arm", "phase": null, "close_mode": "release", "id": "06e2fa88-6a62-4e41-b4e2-62c62bcb6ce7", "experiment_id": "cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd", "asked_by": "agent", "asked_at": "2026-10-01T16:20:14.414948Z", "status": "open", "selection": null, "answer_text": null, "answered_by": null, "answered_at": null, "answer_delivered_at": null, "consumed_at": null}
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-procevent-nextrade.sh arm cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd --for review --agent-reply-file /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/.test-nx-lab/blank.md
+error: Nextrade did not accept the staged reply: error: reply file is empty
+code: VALIDATION_ERROR
+error: cannot arm source nextrade-af0a143a9e5a8d75a5c3133438ece230: its staged reply was not delivered
+
+Reply refusal: no source registered, app decision remains open.
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-procevent-nextrade.sh arm cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd --for review --agent-reply-file /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/.test-nx-lab/reply.md
+registered: nextrade-af0a143a9e5a8d75a5c3133438ece230 (nextrade, task=review)
+armed: nextrade-af0a143a9e5a8d75a5c3133438ece230
+experiment: cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd
+owner-task: review
+
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-procevent-nextrade.sh arm cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd --for review --agent-reply-file /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/.test-nx-lab/reply.md
+error: cannot re-arm source nextrade-af0a143a9e5a8d75a5c3133438ece230: task review already holds this board and no captured round is waiting to be acknowledged
+
+GET /experiments/cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd/messages?experiments=only
+[{"id": "8f41d6b9-11e3-4dc9-9e45-28bfb34c8add", "experiment_id": "cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd", "kind": "message", "author": "agent", "body": "Review staged: café research.\n", "refs": null, "created_at": "2026-10-01T16:20:15.016152Z", "delivered_at": null}]
+GET /experiments/cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd/decisions/06e2fa88-6a62-4e41-b4e2-62c62bcb6ce7
+{"key": "held-task", "title": "Select arm", "explanation": "Choose the next research step", "options": [{"value": "adopt", "label": "Adopt café arm", "consequence": "Continue"}, {"value": "reject", "label": "Reject arm", "consequence": "Search again"}], "recommendation": "adopt", "example": "Continue the selected arm", "phase": null, "close_mode": "release", "id": "06e2fa88-6a62-4e41-b4e2-62c62bcb6ce7", "experiment_id": "cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd", "asked_by": "agent", "asked_at": "2026-10-01T16:20:14.414948Z", "status": "open", "selection": null, "answer_text": null, "answered_by": null, "answered_at": null, "answer_delivered_at": null, "consumed_at": null}
+POST /experiments/cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd/decisions/06e2fa88-6a62-4e41-b4e2-62c62bcb6ce7/answer
+{"key": "held-task", "title": "Select arm", "explanation": "Choose the next research step", "options": [{"value": "adopt", "label": "Adopt café arm", "consequence": "Continue"}, {"value": "reject", "label": "Reject arm", "consequence": "Search again"}], "recommendation": "adopt", "example": "Continue the selected arm", "phase": null, "close_mode": "release", "id": "06e2fa88-6a62-4e41-b4e2-62c62bcb6ce7", "experiment_id": "cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd", "asked_by": "agent", "asked_at": "2026-10-01T16:20:14.414948Z", "status": "answered", "selection": "adopt", "answer_text": "Keep café evidence", "answered_by": "captain", "answered_at": "2026-10-01T16:20:15.712846Z", "answer_delivered_at": null, "consumed_at": null}
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-procevent-nextrade.sh read /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/.test-nx-lab/home/state/procevent-inbox/nextrade-af0a143a9e5a8d75a5c3133438ece230.1.result
+end: false
+messages: 0
+decisions_answered: 1
+decision: 06e2fa88-6a62-4e41-b4e2-62c62bcb6ce7 held-task answered release
+title:
+  | Select arm
+explanation:
+  | Choose the next research step
+example:
+  | Continue the selected arm
+selection:
+  | adopt
+answer_text:
+  | Keep café evidence
+options: [{"consequence":"Continue","value":"adopt","label":"Adopt café arm"},{"consequence":"Search again","label":"Reject arm","value":"reject"}]
+
+schema=fm-task-inbox.v1
+at=2026-10-01T16:20:18Z
+--
+Nextrade review feedback is captured for task review at /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/.test-nx-lab/home/state/procevent-inbox/nextrade-af0a143a9e5a8d75a5c3133438ece230.1.result. Read it with bin/fm-procevent-nextrade.sh read /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/.test-nx-lab/home/state/procevent-inbox/nextrade-af0a143a9e5a8d75a5c3133438ece230.1.result, apply the round, and re-arm the review with the reply.
+$ tasks-axi show held-task --full
+task:
+  id: held-task
+  title: Apply selected research arm
+  state: queued
+  blocked: no
+  blocked_by: none
+  held: no
+  hold_reason: "-"
+  hold_kind: "-"
+  hold_until: "-"
+  kind: task
+  repo: nextrade
+  priority: "-"
+  created: 2026-10-01
+  closed: "-"
+  deps: none
+  links: none
+  body: "Resolution recorded by fm-captain-hold.\nDecision digest: 718a410264899941bd1821c0d5d2ee6bcfd8fffbaaf7368b2b5a40d757162b78\nResolution mode: released\n\nCaptain decision:\nCaptain answered this call through the captured result nextrade-af0a143a9e5a8d75a5c3133438ece230 sequence 1.\nTask: held-task\nAnswer: adopt - Keep café evidence\nAnswer as shown to the captain: Adopt café arm"
+
+GET /experiments/cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd/decisions/06e2fa88-6a62-4e41-b4e2-62c62bcb6ce7
+{"key": "held-task", "title": "Select arm", "explanation": "Choose the next research step", "options": [{"value": "adopt", "label": "Adopt café arm", "consequence": "Continue"}, {"value": "reject", "label": "Reject arm", "consequence": "Search again"}], "recommendation": "adopt", "example": "Continue the selected arm", "phase": null, "close_mode": "release", "id": "06e2fa88-6a62-4e41-b4e2-62c62bcb6ce7", "experiment_id": "cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd", "asked_by": "agent", "asked_at": "2026-10-01T16:20:14.414948Z", "status": "answered", "selection": "adopt", "answer_text": "Keep café evidence", "answered_by": "captain", "answered_at": "2026-10-01T16:20:15.712846Z", "answer_delivered_at": "2026-10-01T16:20:15.928604Z", "consumed_at": null}
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-procevent-nextrade.sh arm cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd --for review --agent-reply-file /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/.test-nx-lab/reply.md
+registered: nextrade-af0a143a9e5a8d75a5c3133438ece230 (nextrade, task=review)
+armed: nextrade-af0a143a9e5a8d75a5c3133438ece230
+experiment: cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd
+owner-task: review
+
+POST /experiments/cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd/session/end
+{"id": "3d1f27f7-6ace-46b9-9578-7f89495e6b3a", "experiment_id": "cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd", "kind": "end", "author": "captain", "body": "Conclude café review", "refs": null, "created_at": "2026-10-01T16:20:19.470365Z", "delivered_at": null}
+schema=fm-task-inbox.v1
+at=2026-10-01T16:20:20Z
+--
+Nextrade review result nextrade-af0a143a9e5a8d75a5c3133438ece230 sequence 2 is terminal at /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/.test-nx-lab/home/state/procevent-inbox/nextrade-af0a143a9e5a8d75a5c3133438ece230.2.result. Read it with bin/fm-procevent-nextrade.sh read /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/.test-nx-lab/home/state/procevent-inbox/nextrade-af0a143a9e5a8d75a5c3133438ece230.2.result, stop and conclude the review, and do not re-arm the review. The review stays yours until you acknowledge this round with bin/fm-procevent.sh handled nextrade-af0a143a9e5a8d75a5c3133438ece230 2, which retires it.
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-procevent-nextrade.sh read /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/.test-nx-lab/home/state/procevent-inbox/nextrade-af0a143a9e5a8d75a5c3133438ece230.2.result
+end: true
+messages: 1
+message: 3d1f27f7-6ace-46b9-9578-7f89495e6b3a end captain
+  | Conclude café review
+refs: null
+decisions_answered: 0
+
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-procevent-nextrade.sh retire cf2d44a5-3a02-4676-aa9e-f4aca2fbb6fd --for review
+error: cannot retire task-owned source nextrade-af0a143a9e5a8d75a5c3133438ece230 while a captured round for task review is unacknowledged; acknowledge it with bin/fm-procevent.sh handled nextrade-af0a143a9e5a8d75a5c3133438ece230 <sequence>
+
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-procevent.sh handled nextrade-af0a143a9e5a8d75a5c3133438ece230 2
+handled: nextrade-af0a143a9e5a8d75a5c3133438ece230 2
+retired: nextrade-af0a143a9e5a8d75a5c3133438ece230 (owner acknowledged its terminal round)
+
+PASS: real Nextrade CLI, PostgreSQL-backed routes, held-task release, refusal, re-arm, terminal acknowledgement.
+$ nextrade-axi experiment create --slug batch-f398c7f1-4804-43fb-8d88-1eece3905cce --title Final answer batch --json
+{"id":"88745ca8-bb3c-46e8-a87d-d4dc890f898b","slug":"batch-f398c7f1-4804-43fb-8d88-1eece3905cce","title":"Final answer batch","status":"active","kind":"free_form","keep":false,"board_url":null,"notes":null,"hypothesis":null,"lifecycle_phase":null,"best_arm_id":null,"holdout_from":null,"search_start":null,"search_end":null,"holdout_end":null,"created_at":"2026-10-01T16:20:21.356844+00:00","ended_at":null,"expires_at":"2026-10-15T16:20:21.359183+00:00"}
+
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-procevent-nextrade.sh source-id 88745ca8-bb3c-46e8-a87d-d4dc890f898b --for review
+nextrade-c20ca1b8f929861c2d18941adb2116a7
+
+$ tasks-axi add question question --repo nextrade
+ok: added question (repo nextrade) -> Queued
+task:
+  id: question
+  title: question
+  state: queued
+  blocked: no
+  blocked_by: none
+  held: no
+  hold_reason: "-"
+  hold_kind: "-"
+  hold_until: "-"
+  kind: task
+  repo: nextrade
+  priority: "-"
+  created: 2026-10-01
+  closed: "-"
+  deps: none
+  links: none
+  body: ""
+help[2]:
+  - Run `tasks-axi start question` to move it to in flight
+  - Run `tasks-axi block question --by <other>` to record a dependency
+
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-captain-hold.sh hold question --reason Captain call question
+question
+
+$ tasks-axi add recheck recheck --repo nextrade
+ok: added recheck (repo nextrade) -> Queued
+task:
+  id: recheck
+  title: recheck
+  state: queued
+  blocked: no
+  blocked_by: none
+  held: no
+  hold_reason: "-"
+  hold_kind: "-"
+  hold_until: "-"
+  kind: task
+  repo: nextrade
+  priority: "-"
+  created: 2026-10-01
+  closed: "-"
+  deps: none
+  links: none
+  body: ""
+help[2]:
+  - Run `tasks-axi start recheck` to move it to in flight
+  - Run `tasks-axi block recheck --by <other>` to record a dependency
+
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-captain-hold.sh hold recheck --reason Captain call recheck
+recheck
+
+$ tasks-axi add prose-task prose-task --repo nextrade
+ok: added prose-task (repo nextrade) -> Queued
+task:
+  id: prose-task
+  title: prose-task
+  state: queued
+  blocked: no
+  blocked_by: none
+  held: no
+  hold_reason: "-"
+  hold_kind: "-"
+  hold_until: "-"
+  kind: task
+  repo: nextrade
+  priority: "-"
+  created: 2026-10-01
+  closed: "-"
+  deps: none
+  links: none
+  body: ""
+help[2]:
+  - Run `tasks-axi start prose-task` to move it to in flight
+  - Run `tasks-axi block prose-task --by <other>` to record a dependency
+
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-captain-hold.sh hold prose-task --reason Captain call prose-task
+prose-task
+
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-captain-hold.sh bind nextrade-c20ca1b8f929861c2d18941adb2116a7
+bound: nextrade-c20ca1b8f929861c2d18941adb2116a7 -> (any)
+
+POST /experiments/88745ca8-bb3c-46e8-a87d-d4dc890f898b/decisions
+{"key": "question", "title": "question", "explanation": "Review call", "options": [{"value": "adopt", "label": "Adopt arm", "consequence": "Continue"}, {"value": "reconcile", "label": "Re-check reality", "consequence": "Verify facts"}], "recommendation": "adopt", "example": "Choose next step", "phase": null, "close_mode": "done", "id": "7521ad79-49e0-4781-8ec9-0340d443744e", "experiment_id": "88745ca8-bb3c-46e8-a87d-d4dc890f898b", "asked_by": "agent", "asked_at": "2026-10-01T16:20:25.587356Z", "status": "open", "selection": null, "answer_text": null, "answered_by": null, "answered_at": null, "answer_delivered_at": null, "consumed_at": null}
+POST /experiments/88745ca8-bb3c-46e8-a87d-d4dc890f898b/decisions/7521ad79-49e0-4781-8ec9-0340d443744e/answer
+{"key": "question", "title": "question", "explanation": "Review call", "options": [{"value": "adopt", "label": "Adopt arm", "consequence": "Continue"}, {"value": "reconcile", "label": "Re-check reality", "consequence": "Verify facts"}], "recommendation": "adopt", "example": "Choose next step", "phase": null, "close_mode": "done", "id": "7521ad79-49e0-4781-8ec9-0340d443744e", "experiment_id": "88745ca8-bb3c-46e8-a87d-d4dc890f898b", "asked_by": "agent", "asked_at": "2026-10-01T16:20:25.587356Z", "status": "answered", "selection": null, "answer_text": "Keep café notes", "answered_by": "captain", "answered_at": "2026-10-01T16:20:25.600998Z", "answer_delivered_at": null, "consumed_at": null}
+POST /experiments/88745ca8-bb3c-46e8-a87d-d4dc890f898b/decisions
+{"key": "recheck", "title": "recheck", "explanation": "Review call", "options": [{"value": "adopt", "label": "Adopt arm", "consequence": "Continue"}, {"value": "reconcile", "label": "Re-check reality", "consequence": "Verify facts"}], "recommendation": "adopt", "example": "Choose next step", "phase": null, "close_mode": "release", "id": "54e7c4ef-c3b7-46e7-8e39-1669437d0b8a", "experiment_id": "88745ca8-bb3c-46e8-a87d-d4dc890f898b", "asked_by": "agent", "asked_at": "2026-10-01T16:20:25.619771Z", "status": "open", "selection": null, "answer_text": null, "answered_by": null, "answered_at": null, "answer_delivered_at": null, "consumed_at": null}
+POST /experiments/88745ca8-bb3c-46e8-a87d-d4dc890f898b/decisions/54e7c4ef-c3b7-46e7-8e39-1669437d0b8a/answer
+{"key": "recheck", "title": "recheck", "explanation": "Review call", "options": [{"value": "adopt", "label": "Adopt arm", "consequence": "Continue"}, {"value": "reconcile", "label": "Re-check reality", "consequence": "Verify facts"}], "recommendation": "adopt", "example": "Choose next step", "phase": null, "close_mode": "release", "id": "54e7c4ef-c3b7-46e7-8e39-1669437d0b8a", "experiment_id": "88745ca8-bb3c-46e8-a87d-d4dc890f898b", "asked_by": "agent", "asked_at": "2026-10-01T16:20:25.619771Z", "status": "answered", "selection": "reconcile", "answer_text": "Check reality", "answered_by": "captain", "answered_at": "2026-10-01T16:20:25.629646Z", "answer_delivered_at": null, "consumed_at": null}
+POST /experiments/88745ca8-bb3c-46e8-a87d-d4dc890f898b/decisions
+{"key": "absent-task", "title": "absent-task", "explanation": "Review call", "options": [{"value": "adopt", "label": "Adopt arm", "consequence": "Continue"}, {"value": "reconcile", "label": "Re-check reality", "consequence": "Verify facts"}], "recommendation": "adopt", "example": "Choose next step", "phase": null, "close_mode": "release", "id": "2bfde0e4-4cc7-4abc-8e1e-2ae95aab77c9", "experiment_id": "88745ca8-bb3c-46e8-a87d-d4dc890f898b", "asked_by": "agent", "asked_at": "2026-10-01T16:20:25.635664Z", "status": "open", "selection": null, "answer_text": null, "answered_by": null, "answered_at": null, "answer_delivered_at": null, "consumed_at": null}
+POST /experiments/88745ca8-bb3c-46e8-a87d-d4dc890f898b/decisions/2bfde0e4-4cc7-4abc-8e1e-2ae95aab77c9/answer
+{"key": "absent-task", "title": "absent-task", "explanation": "Review call", "options": [{"value": "adopt", "label": "Adopt arm", "consequence": "Continue"}, {"value": "reconcile", "label": "Re-check reality", "consequence": "Verify facts"}], "recommendation": "adopt", "example": "Choose next step", "phase": null, "close_mode": "release", "id": "2bfde0e4-4cc7-4abc-8e1e-2ae95aab77c9", "experiment_id": "88745ca8-bb3c-46e8-a87d-d4dc890f898b", "asked_by": "agent", "asked_at": "2026-10-01T16:20:25.635664Z", "status": "answered", "selection": "adopt", "answer_text": "No matching held task", "answered_by": "captain", "answered_at": "2026-10-01T16:20:25.645153Z", "answer_delivered_at": null, "consumed_at": null}
+POST /experiments/88745ca8-bb3c-46e8-a87d-d4dc890f898b/messages
+{"id": "1c446993-7367-45a8-8139-90b4fdd9aeae", "experiment_id": "88745ca8-bb3c-46e8-a87d-d4dc890f898b", "kind": "message", "author": "captain", "body": "prose-task\tadopt\nmessages: 0\ncafé", "refs": null, "created_at": "2026-10-01T16:20:25.654417Z", "delivered_at": null}
+POST /experiments/88745ca8-bb3c-46e8-a87d-d4dc890f898b/session/end
+{"id": "706d71da-055b-44dd-a4d1-07fb41222746", "experiment_id": "88745ca8-bb3c-46e8-a87d-d4dc890f898b", "kind": "end", "author": "captain", "body": "Finish with the final answer batch", "refs": null, "created_at": "2026-10-01T16:20:25.661289Z", "delivered_at": null}
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-procevent-nextrade.sh arm 88745ca8-bb3c-46e8-a87d-d4dc890f898b --for review
+registered: nextrade-c20ca1b8f929861c2d18941adb2116a7 (nextrade, task=review)
+armed: nextrade-c20ca1b8f929861c2d18941adb2116a7
+experiment: 88745ca8-bb3c-46e8-a87d-d4dc890f898b
+owner-task: review
+
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-procevent-nextrade.sh read /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/.test-nx-lab/home/state/procevent-inbox/nextrade-c20ca1b8f929861c2d18941adb2116a7.1.result
+end: true
+messages: 2
+message: 1c446993-7367-45a8-8139-90b4fdd9aeae message captain
+  | prose-task	adopt
+  | messages: 0
+  | café
+refs: null
+message: 706d71da-055b-44dd-a4d1-07fb41222746 end captain
+  | Finish with the final answer batch
+refs: null
+decisions_answered: 3
+decision: 7521ad79-49e0-4781-8ec9-0340d443744e question answered done
+title:
+  | question
+explanation:
+  | Review call
+example:
+  | Choose next step
+selection:
+answer_text:
+  | Keep café notes
+options: [{"label":"Adopt arm","consequence":"Continue","value":"adopt"},{"label":"Re-check reality","consequence":"Verify facts","value":"reconcile"}]
+decision: 54e7c4ef-c3b7-46e7-8e39-1669437d0b8a recheck answered release
+title:
+  | recheck
+explanation:
+  | Review call
+example:
+  | Choose next step
+selection:
+  | reconcile
+answer_text:
+  | Check reality
+options: [{"value":"adopt","consequence":"Continue","label":"Adopt arm"},{"value":"reconcile","consequence":"Verify facts","label":"Re-check reality"}]
+decision: 2bfde0e4-4cc7-4abc-8e1e-2ae95aab77c9 absent-task answered release
+title:
+  | absent-task
+explanation:
+  | Review call
+example:
+  | Choose next step
+selection:
+  | adopt
+answer_text:
+  | No matching held task
+options: [{"value":"adopt","consequence":"Continue","label":"Adopt arm"},{"label":"Re-check reality","consequence":"Verify facts","value":"reconcile"}]
+
+$ tasks-axi show question --full
+task:
+  id: question
+  title: question
+  state: done
+  blocked: no
+  blocked_by: none
+  held: no
+  hold_reason: Captain call question
+  hold_kind: captain
+  hold_until: "-"
+  kind: task
+  repo: nextrade
+  priority: "-"
+  created: "-"
+  closed: 2026-10-01
+  deps: none
+  links: none
+  body: "Resolution recorded by fm-captain-hold.\nDecision digest: 2177f5f7e045ef0f491d4ab36953eb0994fcb62b80b29daef207eef17648531b\nResolution mode: answered\n\nCaptain decision:\nCaptain answered this call through the captured result nextrade-c20ca1b8f929861c2d18941adb2116a7 sequence 1.\nTask: question\nAnswer: Keep café notes"
+
+$ tasks-axi show recheck --full
+task:
+  id: recheck
+  title: recheck
+  state: queued
+  blocked: no
+  blocked_by: none
+  held: yes
+  hold_reason: Captain call recheck
+  hold_kind: captain
+  hold_until: "-"
+  kind: task
+  repo: nextrade
+  priority: "-"
+  created: 2026-10-01
+  closed: "-"
+  deps: none
+  links: none
+  body: "Captain hold set: 2026-10-01T16:20:22Z"
+
+$ tasks-axi show prose-task --full
+task:
+  id: prose-task
+  title: prose-task
+  state: queued
+  blocked: no
+  blocked_by: none
+  held: yes
+  hold_reason: Captain call prose-task
+  hold_kind: captain
+  hold_until: "-"
+  kind: task
+  repo: nextrade
+  priority: "-"
+  created: 2026-10-01
+  closed: "-"
+  deps: none
+  links: none
+  body: "Captain hold set: 2026-10-01T16:20:24Z"
+
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-captain-hold.sh reconcile list
+recheck	requested=2026-10-01T16:20:27Z	source=the captured result nextrade-c20ca1b8f929861c2d18941adb2116a7 sequence 1
+reconcile-requests: 1
+
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-procevent.sh handled nextrade-c20ca1b8f929861c2d18941adb2116a7 1
+handled: nextrade-c20ca1b8f929861c2d18941adb2116a7 1
+retired: nextrade-c20ca1b8f929861c2d18941adb2116a7 (owner acknowledged its terminal round)
+
+PASS: final answered batch closes the question, files reconciliation without release, and prose releases nothing.
+$ nextrade-axi experiment create --slug lease-88eb9e6b-145f-4bd2-9ba3-22762c7baf70 --title Listener guard --json
+{"id":"137f303d-3f95-40a3-9fba-4b9bd2997b21","slug":"lease-88eb9e6b-145f-4bd2-9ba3-22762c7baf70","title":"Listener guard","status":"active","kind":"free_form","keep":false,"board_url":null,"notes":null,"hypothesis":null,"lifecycle_phase":null,"best_arm_id":null,"holdout_from":null,"search_start":null,"search_end":null,"holdout_end":null,"created_at":"2026-10-01T16:20:30.384086+00:00","ended_at":null,"expires_at":"2026-10-15T16:20:30.386193+00:00"}
+
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-procevent-nextrade.sh source-id 137f303d-3f95-40a3-9fba-4b9bd2997b21 --for review
+nextrade-29a7efbc8c830d38ae444f6c7b604e71
+
+GET /experiments/137f303d-3f95-40a3-9fba-4b9bd2997b21/inbox?owner=other-review&wait=0
+{"messages": [], "decisions_answered": [], "end": false, "cursor": "eyJleHBlcmltZW50IjogIjEzN2YzMDNkLTNmOTUtNDBhMy05ZmJhLTRiOWJkMjk5N2IyMSIsICJtZXNzYWdlcyI6IG51bGwsICJkZWNpc2lvbnMiOiBudWxsfQ==", "listener": {"owner": "other-review", "expires_at": "2026-10-01T16:21:00.423054Z"}}
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-procevent-nextrade.sh arm 137f303d-3f95-40a3-9fba-4b9bd2997b21 --for review
+registered: nextrade-29a7efbc8c830d38ae444f6c7b604e71 (nextrade, task=review)
+armed: nextrade-29a7efbc8c830d38ae444f6c7b604e71
+experiment: 137f303d-3f95-40a3-9fba-4b9bd2997b21
+owner-task: review
+
+error: "Listener other-review holds the inbox until 2026-10-01T16:21:00.423054+00:00"
+code: HTTP_409
+operation: "GET /experiments/{experiment_id}/inbox"
+reason_code: listener_active
+
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-procevent-nextrade.sh classify /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/.test-nx-lab/home/state/procevent-inbox/nextrade-29a7efbc8c830d38ae444f6c7b604e71.1.result
+unknown
+
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-procevent-nextrade.sh terminal /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/.test-nx-lab/home/state/procevent-inbox/nextrade-29a7efbc8c830d38ae444f6c7b604e71.1.result
+
+GET /experiments/137f303d-3f95-40a3-9fba-4b9bd2997b21/listener
+{"experiment_id": "137f303d-3f95-40a3-9fba-4b9bd2997b21", "owner": "other-review", "acquired_at": "2026-10-01T16:20:30.423054Z", "expires_at": "2026-10-01T16:21:00.423054Z"}
+schema=fm-task-inbox.v1
+at=2026-10-01T16:20:31Z
+--
+Nextrade review feedback is captured for task review at /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/.test-nx-lab/home/state/procevent-inbox/nextrade-29a7efbc8c830d38ae444f6c7b604e71.1.result. Read it with bin/fm-procevent-nextrade.sh read /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/.test-nx-lab/home/state/procevent-inbox/nextrade-29a7efbc8c830d38ae444f6c7b604e71.1.result, apply the round, and re-arm the review with the reply.
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-procevent.sh handled nextrade-29a7efbc8c830d38ae444f6c7b604e71 1
+handled: nextrade-29a7efbc8c830d38ae444f6c7b604e71 1
+
+$ /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3W3HY36EH5FBN14VJDPAN4M/bin/fm-procevent-nextrade.sh retire 137f303d-3f95-40a3-9fba-4b9bd2997b21 --for review
+retired: nextrade-29a7efbc8c830d38ae444f6c7b604e71
+
+PASS: lease conflict stays actionable and never displaces the existing listener.
