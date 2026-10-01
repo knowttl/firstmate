@@ -34,13 +34,14 @@ bin/fm-procevent-lavish.sh arm <artifact.html>
 ```
 
 A worker-owned board uses `bin/fm-procevent-lavish.sh arm <artifact.html> --for <task-id>` and re-arms with its reply after each nonterminal round; the existing handled marker is the acknowledgement.
+A Nextrade app-backed review uses `bin/fm-procevent-nextrade.sh`; its header owns experiment arming and task-target resolution, and [the operating contract](../../../docs/configuration.md#nextrade-app-backed-reviews) records its shared runner boundary.
 Arm it once, then re-arm only when a round is actually waiting: arming again with nothing to acknowledge is refused.
 A terminal round is never re-armed: the board stays yours until you acknowledge it with `bin/fm-procevent.sh handled <source-id> <sequence>`, which retires it, and until then `retire` refuses the board too.
 Never arm a board that a live task hosts; follow the [crew-hosted Lavish board contract](../../../docs/configuration.md#crew-hosted-lavish-review-boards) for reply acceptance and older-version limits.
 
 Registering a source is not the same fact as listening to it.
-Lavish `arm` waits until this registration's listener is confirmed running and does not report ready without that evidence; other adapters still record the source for the watcher's next reconcile.
-When an earlier registration's listener still holds the board as the confirm window ends, Lavish `arm` prints `still-listening` instead of `armed`; that listener keeps serving the board, and the new registration takes effect only after you retire the source and arm it again.
+Lavish and Nextrade `arm` wait until this registration's listener is confirmed running and do not report ready without that evidence; other adapters still record the source for the watcher's next reconcile.
+When an earlier registration's listener still holds the source as the confirm window ends, those adapters print `still-listening` instead of `armed`; that listener keeps serving the source, and the new registration takes effect only after you retire the source and arm it again.
 After arming by hand, confirm `bin/fm-procevent.sh list` reports that source as `live`, and run `bin/fm-procevent.sh reconcile` when it does not.
 Reconcile reports every launch that did not prove it took its claim within the confirm window as `failed=` and exits non-zero, so a source that cannot be started says so instead of looking armed, and it wakes you once per failure episode about it because the watcher discards that count; `start` does not fix that - if the source stays unowned, run `start` attached to read the runner's refusal, then check the source command and adapter binary the registration names, and if a later reconcile finds the source owned the episode closes on its own.
 A source `list` reports as `orphaned` is one reconcile will not relaunch, because something may still be polling it; reconcile wakes you once about it, and that wake's payload says which of two recoveries applies.
@@ -82,7 +83,7 @@ Eligibility is a firstmate judgment made BEFORE arming, because the scripts cann
 Never bind an action that is destructive, irreversible, or security-sensitive, an action needing captain approval or any gate decision, or an action whose right form depends on what the condition finds - those keep the existing check-fires-then-firstmate-decides flow, for which a plain custom check or another adapter stays correct.
 When in doubt, arm only the condition half as an ordinary check and keep the action as a wake-time decision.
 
-`bin/fm-procevent.sh --help`, `bin/fm-procevent-lavish.sh --help`, `bin/fm-procevent-when.sh --help`, `bin/fm-procevent-quota.sh --help`, and `bin/fm-procevent-remote-reply.sh --help` own the exact commands and flags.
+`bin/fm-procevent.sh --help`, `bin/fm-procevent-lavish.sh --help`, `bin/fm-procevent-nextrade.sh --help`, `bin/fm-procevent-when.sh --help`, `bin/fm-procevent-quota.sh --help`, and `bin/fm-procevent-remote-reply.sh --help` own the exact commands and flags.
 
 An explicitly enabled external adapter registers through `bin/fm-procevent.sh register-extension`, never through a package-discovered script or package-supplied argv.
 [`docs/configuration.md`](../../../docs/configuration.md#trusted-external-process-event-adapters-configextensionsd) owns setup and [`docs/extension-bindings.md`](../../../docs/extension-bindings.md) owns the narrow trusted-code and untrusted-evidence boundary.
@@ -114,6 +115,7 @@ Two rules the commands cannot enforce for you:
 : Ask the adapter what the result means rather than parsing it yourself.
   `bin/fm-procevent.sh classify <result-file>` routes through the immutable built-in or extension identity captured with that result; for Lavish, its existing direct command returns `feedback`, `ended`, `waiting`, `disconnected`, `missing`, or `unknown`.
   Consume a Lavish capture with `bin/fm-procevent-lavish.sh read <result-file>` rather than grepping the raw file: that command reports declared and presented item counts plus a completeness verdict, enumerates every captured queued item while retaining supplied element identity, and surfaces a `tag=message` freeform message as its own field, labeling it as session-ending only when the session ended.
+  Consume a Nextrade capture with `bin/fm-procevent-nextrade.sh read <result-file>` to present every delivered message and decision before concluding or re-arming the app review.
   `answers` remains the keyed-choice extractor and never treats freeform prose as a decision key.
   A `feedback` result can still be the last one a review ever produces, so never assume another wake is coming just because the state is not `ended`.
 The crew-hosted recovery ordering and arm-and-acknowledge rule are owned by the [crew-hosted Lavish board contract](../../../docs/configuration.md#crew-hosted-lavish-review-boards); `bin/fm-brief.sh` emits its instruction at the point of use.

@@ -557,7 +557,7 @@ cmd_register_task() {
   local pending_rounds=0 delivered
   local -a argv=() kept=()
   shift 4 2>/dev/null || usage
-  [ "$adapter" = lavish ] || die "register-task is reserved for the Lavish adapter"
+  case "$adapter" in lavish|nextrade) ;; *) die "register-task is reserved for the Lavish and Nextrade adapters" ;; esac
   fm_procevent_adapter_valid "$adapter" || die "adapter name must be lowercase alphanumeric or dash: $adapter"
   fm_procevent_source_id_valid "$id" || die "source id must be path-safe and at most 64 characters: $id"
   fm_pr_task_id_valid "$task" || die "task id is invalid: $task"
@@ -809,19 +809,21 @@ cmd_register_extension() {
 # and drains until `fm_procevent_mark_handled` records it.
 publish_result() {  # <result-file>
   local result=$1 id seq adapter line status=1 owner_task='' message='' record=''
+  local review_label=Lavish review_surface=board
   local ring_backend ring_target ring_meta inbox_dir handled_dir pre_existing existing new_record
   id=$(fm_procevent_result_source_id "$result")
   seq=$(fm_procevent_result_sequence "$result")
   fm_procevent_source_id_valid "$id" || return 1
   adapter=$(fm_procevent_result_adapter "$result" 2>/dev/null || true)
   [ -n "$adapter" ] || return 1
+  if [ "$adapter" = nextrade ]; then review_label=Nextrade; review_surface=review; fi
   line=$(fm_procevent_event_line "$adapter" "$id" "$seq") || return 1
   owner_task=$(fm_procevent_result_owner_task "$result" 2>/dev/null || true)
   fm_procevent_source_lock_acquire "$id" || return 1
   if ! fm_procevent_is_handled "$STATE" "$id" "$seq"; then
     if [ -n "$owner_task" ]; then
       if adapter_result_is_terminal "$adapter" "$result"; then
-        message="Lavish review result $id sequence $seq is terminal at $result. Read it with bin/fm-procevent-lavish.sh read $result, stop and conclude the review, and do not re-arm the board. The board stays yours until you acknowledge this round with bin/fm-procevent.sh handled $id $seq, which retires it."
+        message="$review_label review result $id sequence $seq is terminal at $result. Read it with bin/fm-procevent-$adapter.sh read $result, stop and conclude the review, and do not re-arm the $review_surface. The $review_surface stays yours until you acknowledge this round with bin/fm-procevent.sh handled $id $seq, which retires it."
       else
         export FM_PROCEVENT_CAPTURE_SOURCE_LOCK_HELD=1
         if adapter_result_is_silent "$adapter" "$result"; then
@@ -835,7 +837,7 @@ publish_result() {  # <result-file>
           esac
         fi
         unset FM_PROCEVENT_CAPTURE_SOURCE_LOCK_HELD
-        message="Lavish review feedback is captured for task $owner_task at $result. Read it with bin/fm-procevent-lavish.sh read $result, apply the round, and re-arm the board with the reply."
+        message="$review_label review feedback is captured for task $owner_task at $result. Read it with bin/fm-procevent-$adapter.sh read $result, apply the round, and re-arm the $review_surface with the reply."
       fi
       # Snapshot the records that already exist (active and handled) before
       # the idempotent write, so a dedup match - including one already

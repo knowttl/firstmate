@@ -17,7 +17,7 @@ The agent performs the semantic inventory because scripts must not infer captain
 ## Policy
 
 Every unresolved question that belongs to the captain and is discovered while producing, reading, presenting, or ending an investigation or visual review must be carried by a captain-held task in the authoritative backlog of the home that owns the originating work before that work or review may be treated as complete.
-For a Lavish board-backed handoff, pass the reply through `bin/fm-procevent-lavish.sh arm --agent-reply-file` before appending the status; the adapter owns version-specific acceptance ordering.
+For a Lavish board-backed or Nextrade app-backed handoff, pass the reply through the corresponding `bin/fm-procevent-lavish.sh` or `bin/fm-procevent-nextrade.sh` `arm --agent-reply-file` before appending the status; the adapter owns acceptance ordering.
 Prefer holding the work item the question gates over minting a new row; create a new task only when no work item exists to hold.
 Put the question and its options in the hold reason, and keep one held task per genuine gate: a multi-question review is one held task pointing at its report, not a row per question. Represent that task with exactly one board card that consolidates its questions and options; never fan one task id into duplicate same-key cards.
 Register or re-hold through `bin/fm-captain-hold.sh hold`, which is idempotent per task id.
@@ -35,6 +35,8 @@ When the answer changes what a task must build, follow `AGENTS.md` section 7's m
 When the captain says "later", that is an answer too: re-hold with `bin/fm-captain-hold.sh hold <id> --reason "<reason>" --until <date>` so the item leaves the live Captain's Call and resurfaces on its date, instead of leaving a live-looking card or fabricating a closure.
 "A keyed answer resolves its matching captain-held task" is one capability with one owner, `bin/fm-captain-hold.sh answers`, and every channel that carries a captain answer feeds it the same task id and answer; a channel never maps keys to tasks, records a decision, or resolves anything itself.
 Chat already feeds it through `bin/fm-send.sh --resolve-key`, and a captured-answer source feeds it once bound with `bin/fm-captain-hold.sh bind <source-id>`; bind before arming the source, and key each structured question by the held task's id.
+For an app-backed review, create the Nextrade experiment decision with that task id as its `key` and the intended `close_mode`, then bind the source identified by `bin/fm-procevent-nextrade.sh source-id <experiment-id> --for <hosting-task-id>` and arm it for the hosting task.
+The Nextrade adapter's header owns task-target resolution and CLI syntax; it reports already-answered app decisions and never answers one itself.
 An unbound source and a key that names no captain-held task both simply feed nothing: the answer is still captured and firstmate is still woken, and closing falls back to the direct command above.
 One answer value is reserved and closes nothing: `reconcile` means "go re-check reality", never "the captain answered", so the shared intake refuses it from every channel and creates nothing.
 A bound captured source uses a separate seam: its adapter omits reconcile from keyed answers and emits the selected task id through `reconciles`, the generic runner feeds that into `reconcile-requests`, and the intake verifies the source binding and the local captain-held task before filing the durable board request.
