@@ -21,6 +21,21 @@ write_merge_marker() {  # <state> <id> <provider> <host> <path> <number>
   chmod 600 "$1/$2.pr-poll-merge-notified"
 }
 
+# The backgrounded drive-call wait must name the exact PID captured at
+# background time and must warn against pgrep self-matching: pattern matching
+# `axi run` also matches the worker's own command line, so the wait resolves
+# to its own PID and deadlocks waiting for itself.
+test_no_mistakes_dod_names_exact_drive_pid_wait() {
+  local out
+  out="$TMP_ROOT/dod-drive-pid.md"
+  fm_dod_block no-mistakes dod-drive-pid-task > "$out"
+  assert_grep 'DRIVE_PID=$!' "$out" "no-mistakes DoD must capture the exact drive-call PID at background time"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the dollar must stay literal
+  assert_grep 'wait $DRIVE_PID' "$out" "no-mistakes DoD must wait on the exact captured PID"
+  assert_grep 'pgrep' "$out" "no-mistakes DoD must warn against pgrep self-matching"
+  pass "no-mistakes DoD names the exact drive-call PID wait"
+}
+
 test_scout_done_is_not_gated() {
   local repo wt
   repo="$TMP_ROOT/scout-repo"
@@ -400,5 +415,6 @@ test_standalone_local_only_needs_project_ref
 test_non_done_lines_are_not_gated
 test_fenced_and_indented_captain_lines_are_not_intent
 test_pr_based_dod_draft_check_uses_gh_axi
+test_no_mistakes_dod_names_exact_drive_pid_wait
 
 echo "all fm-dod-lib tests passed"
