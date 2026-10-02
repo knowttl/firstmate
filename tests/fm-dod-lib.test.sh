@@ -26,13 +26,17 @@ write_merge_marker() {  # <state> <id> <provider> <host> <path> <number>
 # `axi run` also matches the worker's own command line, so the wait resolves
 # to its own PID and deadlocks waiting for itself.
 test_no_mistakes_dod_names_exact_drive_pid_wait() {
-  local out
-  out="$TMP_ROOT/dod-drive-pid.md"
-  fm_dod_block no-mistakes dod-drive-pid-task > "$out"
-  assert_grep 'DRIVE_PID=$!' "$out" "no-mistakes DoD must capture the exact drive-call PID at background time"
-  # shellcheck disable=SC2016  # single quotes are deliberate: the dollar must stay literal
-  assert_grep 'wait $DRIVE_PID' "$out" "no-mistakes DoD must wait on the exact captured PID"
-  assert_grep 'pgrep' "$out" "no-mistakes DoD must warn against pgrep self-matching"
+  local forge out
+  for forge in none gerrit; do
+    out="$TMP_ROOT/dod-drive-pid-$forge.md"
+    fm_dod_block no-mistakes dod-drive-pid-task fm/dod-drive-pid-task "$forge" > "$out"
+    assert_grep 'DRIVE_PID=$!' "$out" "no-mistakes DoD must capture the exact drive-call PID at background time"
+    assert_grep 'in the shell that launched the child' "$out" "no-mistakes DoD must qualify the shell wait"
+    assert_grep 'with GNU tail' "$out" "no-mistakes DoD must qualify the GNU tail alternative"
+    # shellcheck disable=SC2016  # single quotes are deliberate: the dollar must stay literal
+    assert_grep 'wait $DRIVE_PID' "$out" "no-mistakes DoD must wait on the exact captured PID"
+    assert_grep 'pgrep' "$out" "no-mistakes DoD must warn against pgrep self-matching"
+  done
   pass "no-mistakes DoD names the exact drive-call PID wait"
 }
 

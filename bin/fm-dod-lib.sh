@@ -301,7 +301,7 @@ Do not hand-edit, commit, or fix findings yourself while a run is active - the p
 
 One drive call blocks until the next gate or outcome, which routinely outlives what your harness lets a single command run: Claude Code kills a command at ten minutes maximum, while one fix round is capped around thirty minutes and up to three rounds chain.
 So background the drive call instead of sitting in one blocking hold your harness will kill, and read its return when it finishes.
-Capture the exact PID immediately after backgrounding it (\`DRIVE_PID=\$!\`) and wait only on that PID (\`wait \$DRIVE_PID\` or \`tail --pid=\$DRIVE_PID -f /dev/null\`).
+Capture the exact PID immediately after backgrounding it (\`DRIVE_PID=\$!\`) and wait only on that PID: use \`wait \$DRIVE_PID\` in the shell that launched the child, or, with GNU tail, \`tail --pid=\$DRIVE_PID -f /dev/null\`.
 Never search the process table with \`pgrep\` for your own pipeline command: pattern matching against \`axi run\` also matches your own command line, so the wait resolves to your own PID and deadlocks waiting for itself.
 Declare that wait using the brief's status-reporting rule before waiting on the backgrounded drive call.
 Where a harness's own command limit is not established, assume it bounds commands and use that same backgrounded shape.
