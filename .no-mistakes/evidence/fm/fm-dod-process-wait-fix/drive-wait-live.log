@@ -1,0 +1,76 @@
+$ bash bin/fm-lab-home.sh create /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3YX3A3C344HZ9BWJ8RMGXS7/fm-lab.cmrtlx3p
+/home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3YX3A3C344HZ9BWJ8RMGXS7/fm-lab.cmrtlx3p
+
+$ bash bin/fm-brief.sh wait-ordinary-none sample --mode no-mistakes --forge none
+scaffolded: /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3YX3A3C344HZ9BWJ8RMGXS7/fm-lab.cmrtlx3p/data/wait-ordinary-none/brief.md (ship, mode=no-mistakes; replace {TASK} and {FIRSTMATE_SPEC})
+
+wait-ordinary-none: emitted identical child-PID commands and portability/self-match guidance
+Capture the exact PID immediately after backgrounding it (`DRIVE_PID=$!`) and wait only on that PID: use `wait $DRIVE_PID` in the shell that launched the child, or, with GNU tail, `tail --pid=$DRIVE_PID -f /dev/null`.
+Never search the process table with `pgrep` for your own pipeline command: pattern matching against `axi run` also matches your own command line, so the wait resolves to your own PID and deadlocks waiting for itself.
+
+$ bash bin/fm-brief.sh wait-promoted-none sample --scout
+scaffolded: /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3YX3A3C344HZ9BWJ8RMGXS7/fm-lab.cmrtlx3p/data/wait-promoted-none/brief.md (scout; replace {TASK} and {FIRSTMATE_SPEC})
+
+$ bash bin/fm-promote.sh wait-promoted-none --mode no-mistakes --yolo off
+promoted wait-promoted-none to ship mode=no-mistakes yolo=off (teardown protection restored)
+wrote ship instructions for mode=no-mistakes: /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3YX3A3C344HZ9BWJ8RMGXS7/fm-lab.cmrtlx3p/data/wait-promoted-none/ship-instructions.md
+next: FM_HOME=/home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3YX3A3C344HZ9BWJ8RMGXS7/fm-lab.cmrtlx3p bin/fm-send.sh fm-wait-promoted-none "$(cat /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3YX3A3C344HZ9BWJ8RMGXS7/fm-lab.cmrtlx3p/data/wait-promoted-none/ship-instructions.md)"
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair missing watcher supervision with a foreground checkpoint: bin/fm-watch-checkpoint.sh --seconds 180.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+wait-promoted-none: emitted identical child-PID commands and portability/self-match guidance
+Capture the exact PID immediately after backgrounding it (`DRIVE_PID=$!`) and wait only on that PID: use `wait $DRIVE_PID` in the shell that launched the child, or, with GNU tail, `tail --pid=$DRIVE_PID -f /dev/null`.
+Never search the process table with `pgrep` for your own pipeline command: pattern matching against `axi run` also matches your own command line, so the wait resolves to your own PID and deadlocks waiting for itself.
+
+$ bash bin/fm-brief.sh wait-ordinary-gerrit sample --mode no-mistakes --forge gerrit
+scaffolded: /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3YX3A3C344HZ9BWJ8RMGXS7/fm-lab.cmrtlx3p/data/wait-ordinary-gerrit/brief.md (ship, mode=no-mistakes forge=gerrit shape=squash; replace {TASK} and {FIRSTMATE_SPEC})
+
+wait-ordinary-gerrit: emitted identical child-PID commands and portability/self-match guidance
+Capture the exact PID immediately after backgrounding it (`DRIVE_PID=$!`) and wait only on that PID: use `wait $DRIVE_PID` in the shell that launched the child, or, with GNU tail, `tail --pid=$DRIVE_PID -f /dev/null`.
+Never search the process table with `pgrep` for your own pipeline command: pattern matching against `axi run` also matches your own command line, so the wait resolves to your own PID and deadlocks waiting for itself.
+
+$ bash bin/fm-brief.sh wait-promoted-gerrit sample --scout
+scaffolded: /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3YX3A3C344HZ9BWJ8RMGXS7/fm-lab.cmrtlx3p/data/wait-promoted-gerrit/brief.md (scout; replace {TASK} and {FIRSTMATE_SPEC})
+
+$ bash bin/fm-promote.sh wait-promoted-gerrit --mode no-mistakes --yolo off
+promoted wait-promoted-gerrit to ship mode=no-mistakes yolo=off forge=gerrit (teardown protection restored)
+wrote ship instructions for mode=no-mistakes forge=gerrit: /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3YX3A3C344HZ9BWJ8RMGXS7/fm-lab.cmrtlx3p/data/wait-promoted-gerrit/ship-instructions.md
+next: FM_HOME=/home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3YX3A3C344HZ9BWJ8RMGXS7/fm-lab.cmrtlx3p bin/fm-send.sh fm-wait-promoted-gerrit "$(cat /home/brytton/.no-mistakes/worktrees/37ca4d16e8c5/01M3YX3A3C344HZ9BWJ8RMGXS7/fm-lab.cmrtlx3p/data/wait-promoted-gerrit/ship-instructions.md)"
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+
+wait-promoted-gerrit: emitted identical child-PID commands and portability/self-match guidance
+Capture the exact PID immediately after backgrounding it (`DRIVE_PID=$!`) and wait only on that PID: use `wait $DRIVE_PID` in the shell that launched the child, or, with GNU tail, `tail --pid=$DRIVE_PID -f /dev/null`.
+Never search the process table with `pgrep` for your own pipeline command: pattern matching against `axi run` also matches your own command line, so the wait resolves to your own PID and deadlocks waiting for itself.
+
+$ bash -c sleep 1 &
+DRIVE_PID=$!
+printf "parent=%s child=%s\n" "$$" "$DRIVE_PID"
+[ "$DRIVE_PID" != "$$" ] || exit 10
+wait $DRIVE_PID
+printf "child wait returned\n"
+ axi run safe-wait-adversary
+parent=1972373 child=1972374
+child wait returned
+
+Emitted wait $DRIVE_PID: returned after child exit in 1.00s while launcher remained alive.
+
+$ bash -c sleep 1 &
+DRIVE_PID=$!
+printf "parent=%s child=%s\n" "$$" "$DRIVE_PID"
+[ "$DRIVE_PID" != "$$" ] || exit 10
+tail --pid=$DRIVE_PID -f /dev/null
+printf "child wait returned\n"
+ axi run safe-wait-adversary
+parent=1972555 child=1972556
+child wait returned
+
+Emitted tail --pid=$DRIVE_PID -f /dev/null: returned after child exit in 2.00s while launcher remained alive.
+
+$ bash -c FPID=$(pgrep -f "axi run self-match-692731" | head -1); printf "parent=%s discovered=%s\n" "$$" "$FPID"; [ "$FPID" = "$$" ] || exit 10; timeout 2 tail --pid=$FPID -f /dev/null; rc=$?; printf "legacy self-wait exit=%s (124 means timeout)\n" "$rc"; [ "$rc" = 124 ] axi run self-match-692731
+parent=1972833 discovered=1972833
+legacy self-wait exit=124 (124 means timeout)
