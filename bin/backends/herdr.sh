@@ -3415,7 +3415,8 @@ fm_backend_herdr_composer_content() {  # <target>
   else
     return 1
   fi
-  FM_COMPOSER_GHOST_LUMA_MAX=0 fm_composer_extract_selected_content "$caps" "$cap"
+  FM_COMPOSER_GHOST_LUMA_MAX=0 FM_COMPOSER_POPUP_BELOW_RULE=1 \
+    fm_composer_extract_selected_content "$caps" "$cap"
 }
 
 # fm_backend_herdr_composer_payload_shown: 0 when <after>, read from a
@@ -3481,6 +3482,10 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
     content=$(fm_backend_herdr_composer_content "$target") \
       || { printf 'send-failed'; return 0; }
     [ -z "${content//[$' \t\r\n\v\f']/}" ] || { printf 'send-failed'; return 0; }
+    # The read cannot tell an empty composer from a whitespace-only one, and a
+    # stray leading space turns a typed /exit into chat. Ctrl+U on an empty
+    # composer is a no-op.
+    fm_backend_herdr_send_key "$target" C-u || { printf 'send-failed'; return 0; }
   fi
   fm_backend_herdr_send_literal "$target" "$text" || { printf 'send-failed'; return 0; }
   sleep "$settle"

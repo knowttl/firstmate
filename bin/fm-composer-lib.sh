@@ -1747,8 +1747,69 @@ _fm_composer_bare_rule_sandwich() {  # <plain-screen> <row>
   _fm_composer_titled_rule_row "$above" "${below//─/ }"
 }
 
+# _fm_composer_framed_row_above_popup: print the row of the composer a
+# slash-command popup was drawn under, when bare agent-glyph <row> is a popup
+# row rather than the composer.
+#
+# Claude Code 2.1.310 draws the popup BELOW the composer's closing rule and
+# marks its selected row with the prompt's own glyph, indented two columns:
+#   ────────
+#   ❯ /exit
+#   ────────
+#     ❯ /exit        Exit the CLI
+#       /context     ...
+# The cursorless selector takes the last glyph row as the bare candidate, so
+# without this the popup row, with every popup row under it, reads as the
+# draft. The popup row is told from a live draft by shape: it is not followed
+# by a rule, contiguous non-blank rows lead up to a closing rule, a framed
+# glyph row sits between that rule and its opening rule, and <row> is
+# indented deeper than the framed row. Opt-in through FM_COMPOSER_POPUP_BELOW_RULE
+# because the shared classifier must never move toward `empty` (the
+# `blank row reopens lower candidates` and `separated: a live draft below the
+# pair keeps winning` cases).
+_fm_composer_framed_row_above_popup() {  # <plain-screen> <row>
+  local plain=$1 row=$2 up trimmed glyph below close=-1 open=-1 framed=-1
+  local row_indent framed_indent close_spaces
+  [ "$row" -ge 2 ] || return 1
+  below=$(_fm_composer_screen_row "$((row + 1))" "$plain")
+  fm_composer_normalize_trim_var below
+  ! _fm_composer_pi_separator_row "$below" || return 1
+  up=$((row - 1))
+  while [ "$up" -ge 0 ]; do
+    trimmed=$(_fm_composer_screen_row "$up" "$plain")
+    fm_composer_normalize_trim_var trimmed
+    if _fm_composer_pi_separator_row "$trimmed"; then
+      close=$up
+      close_spaces=${trimmed//─/ }
+      break
+    fi
+    [ -n "$trimmed" ] || return 1
+    up=$((up - 1))
+  done
+  [ "$close" -ge 2 ] || return 1
+  up=$((close - 1))
+  while [ "$up" -ge 0 ]; do
+    trimmed=$(_fm_composer_screen_row "$up" "$plain")
+    fm_composer_normalize_trim_var trimmed
+    if _fm_composer_pi_separator_row "$trimmed" \
+       || _fm_composer_titled_rule_row "$trimmed" "$close_spaces"; then
+      open=$up
+      break
+    fi
+    ! fm_composer_leading_agent_glyph_var glyph "$trimmed" || framed=$up
+    up=$((up - 1))
+  done
+  [ "$open" -ge 0 ] && [ "$framed" -gt "$open" ] || return 1
+  row_indent=$(_fm_composer_screen_row "$row" "$plain")
+  framed_indent=$(_fm_composer_screen_row "$framed" "$plain")
+  row_indent=${row_indent%%[^ ]*}
+  framed_indent=${framed_indent%%[^ ]*}
+  [ "${#row_indent}" -gt "${#framed_indent}" ] || return 1
+  printf '%s' "$framed"
+}
+
 _fm_composer_select_cursorless() {
-  local plain=$1 generic=-1 next boundary raw trimmed glyph bare footer=0
+  local plain=$1 generic=-1 next boundary raw trimmed glyph bare footer=0 framed
   FM_COMPOSER_SELECTED_KIND=
   FM_COMPOSER_SELECTED_FIRST=-1
   FM_COMPOSER_SELECTED_LAST=-1
@@ -1775,6 +1836,10 @@ _fm_composer_select_cursorless() {
     else
       bare=-1
     fi
+  fi
+  if [ "${FM_COMPOSER_POPUP_BELOW_RULE:-0}" = 1 ] \
+     && framed=$(_fm_composer_framed_row_above_popup "$plain" "$bare"); then
+    bare=$framed
   fi
   if [ "$bare" -gt "$generic" ]; then
     generic=$bare
